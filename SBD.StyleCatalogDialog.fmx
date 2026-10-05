@@ -1,0 +1,216 @@
+object StyleCatalogDialog: TStyleCatalogDialog
+  Left = 0
+  Top = 0
+  Caption = #1057#1087#1088#1072#1074#1086#1095#1085#1080#1082' '#1089#1090#1080#1083#1077#1081' FMX'
+  ClientHeight = 760
+  ClientWidth = 1120
+  Position = OwnerFormCenter
+  StyleBook = FormMain.StyleBookWinUI3
+  Constraints.MinHeight = 600.000000000000000000
+  Constraints.MinWidth = 960.000000000000000000
+  FormFactor.Width = 320
+  FormFactor.Height = 480
+  FormFactor.Devices = [Desktop]
+  DesignerMasterStyle = 0
+  object Header: TLayout
+    Align = Top
+    Padding.Left = 24.000000000000000000
+    Padding.Top = 16.000000000000000000
+    Padding.Right = 24.000000000000000000
+    Size.Width = 1120.000000000000000000
+    Size.Height = 108.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 0
+    object TitleLabel: TLabel
+      Align = Top
+      StyledSettings = [FontColor]
+      Position.X = 24.000000000000000000
+      Position.Y = 16.000000000000000000
+      Size.Width = 1072.000000000000000000
+      Size.Height = 36.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.Font.Size = 20.000000000000000000
+      TextSettings.Font.StyleExt = {00070000000000000004000000}
+      Text = #1057#1087#1088#1072#1074#1086#1095#1085#1080#1082' '#1089#1090#1080#1083#1077#1081' FMX'
+    end
+    object HelpLabel: TLabel
+      Align = Top
+      Position.X = 24.000000000000000000
+      Position.Y = 52.000000000000000000
+      Size.Width = 1072.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      Text = 
+        #1053#1072#1081#1076#1080#1090#1077' '#1082#1083#1072#1089#1089' '#1082#1086#1085#1090#1088#1086#1083#1072'. '#1064#1072#1073#1083#1086#1085' '#1089#1086#1076#1077#1088#1078#1080#1090' '#1101#1083#1077#1084#1077#1085#1090#1099' '#1080' '#1085#1077#1076#1086#1089#1090#1072#1102#1097#1080#1077' '#1089 +
+        #1090#1080#1083#1080' '#1079#1072#1074#1080#1089#1080#1084#1086#1089#1090#1077#1081'; '#1086#1092#1086#1088#1084#1083#1077#1085#1080#1077' '#1084#1086#1078#1085#1086' '#1085#1072#1089#1090#1088#1086#1080#1090#1100' '#1074' '#1088#1077#1076#1072#1082#1090#1086#1088#1077'.'
+    end
+  end
+  object Actions: TPanel
+    Align = Bottom
+    Padding.Left = 24.000000000000000000
+    Padding.Top = 16.000000000000000000
+    Padding.Right = 24.000000000000000000
+    Padding.Bottom = 16.000000000000000000
+    Position.Y = 688.000000000000000000
+    Size.Width = 1120.000000000000000000
+    Size.Height = 72.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'panelstyle_fill_strong_dialog'
+    TabOrder = 2
+    object CloseButton: TButton
+      Align = Right
+      Cancel = True
+      ModalResult = 2
+      Position.X = 984.000000000000000000
+      Position.Y = 16.000000000000000000
+      Size.Width = 112.000000000000000000
+      Size.Height = 40.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 1
+      Text = #1047#1072#1082#1088#1099#1090#1100
+    end
+    object CreateButton: TButton
+      Align = Right
+      Default = True
+      ModalResult = 1
+      Margins.Right = 12.000000000000000000
+      Position.X = 788.000000000000000000
+      Position.Y = 16.000000000000000000
+      Size.Width = 184.000000000000000000
+      Size.Height = 40.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = 'buttonstyle_accent'
+      TabOrder = 0
+      Text = #1057#1086#1079#1076#1072#1090#1100' '#1096#1072#1073#1083#1086#1085
+    end
+  end
+  object Body: TLayout
+    Align = Client
+    Margins.Left = 24.000000000000000000
+    Margins.Right = 24.000000000000000000
+    Size.Width = 1072.000000000000000000
+    Size.Height = 580.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 1
+    object ClassPanel: TLayout
+      Align = Left
+      Size.Width = 248.000000000000000000
+      Size.Height = 580.000000000000000000
+      Size.PlatformDefault = False
+      object SearchEdit: TEdit
+        Touch.InteractiveGestures = [LongTap, DoubleTap]
+        Align = Top
+        Margins.Bottom = 12.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        TextPrompt = #1053#1072#1079#1074#1072#1085#1080#1077' '#1082#1083#1072#1089#1089#1072
+        OnChangeTracking = FilterClasses
+      end
+      object ClassList: TListBox
+        Align = Client
+        Size.Width = 248.000000000000000000
+        Size.Height = 536.000000000000000000
+        Size.PlatformDefault = False
+        DisableFocusEffect = True
+        ItemHeight = 32.000000000000000000
+        DefaultItemStyles.ItemStyle = ''
+        DefaultItemStyles.GroupHeaderStyle = ''
+        DefaultItemStyles.GroupFooterStyle = ''
+        OnChange = SelectClass
+        Viewport.Width = 248.000000000000000000
+        Viewport.Height = 536.000000000000000000
+      end
+    end
+    object Splitter: TSplitter
+      Align = Left
+      Cursor = crHSplit
+      MinSize = 20.000000000000000000
+      Position.X = 248.000000000000000000
+      Size.Width = 12.000000000000000000
+      Size.Height = 580.000000000000000000
+      Size.PlatformDefault = False
+    end
+    object ReferencePanel: TLayout
+      Align = Client
+      Size.Width = 812.000000000000000000
+      Size.Height = 580.000000000000000000
+      Size.PlatformDefault = False
+      object InfoMemo: TMemo
+        Touch.InteractiveGestures = [Pan, LongTap, DoubleTap]
+        DataDetectorTypes = []
+        ReadOnly = True
+        Align = Top
+        Size.Width = 812.000000000000000000
+        Size.Height = 96.000000000000000000
+        Size.PlatformDefault = False
+        TabStop = False
+        Viewport.Width = 794.000000000000000000
+        Viewport.Height = 84.000000000000000000
+      end
+      object DependenciesMemo: TMemo
+        Touch.InteractiveGestures = [Pan, LongTap, DoubleTap]
+        DataDetectorTypes = []
+        ReadOnly = True
+        Align = Top
+        Margins.Top = 8.000000000000000000
+        Margins.Bottom = 12.000000000000000000
+        Position.Y = 104.000000000000000000
+        Size.Width = 812.000000000000000000
+        Size.Height = 104.000000000000000000
+        Size.PlatformDefault = False
+        TabStop = False
+        Viewport.Width = 794.000000000000000000
+        Viewport.Height = 92.000000000000000000
+      end
+      object DetailsMemo: TMemo
+        Touch.InteractiveGestures = [Pan, LongTap, DoubleTap]
+        DataDetectorTypes = []
+        ReadOnly = True
+        Align = Bottom
+        Margins.Top = 12.000000000000000000
+        Position.Y = 476.000000000000000000
+        Size.Width = 812.000000000000000000
+        Size.Height = 104.000000000000000000
+        Size.PlatformDefault = False
+        TabStop = False
+        Viewport.Width = 794.000000000000000000
+        Viewport.Height = 92.000000000000000000
+      end
+      object PartsGrid: TStringGrid
+        Align = Client
+        CanFocus = True
+        ClipChildren = True
+        Size.Width = 812.000000000000000000
+        Size.Height = 244.000000000000000000
+        Size.PlatformDefault = False
+        RowHeight = 32.000000000000000000
+        RowCount = 0
+        Options = [ColumnResize, RowLines, AlwaysShowSelection, Tabs, Header]
+        OnSelChanged = SelectPart
+        Viewport.Width = 810.000000000000000000
+        Viewport.Height = 209.000000000000000000
+        object PartNameColumn: TStringColumn
+          Header = #1069#1083#1077#1084#1077#1085#1090
+          HeaderSettings.TextSettings.WordWrap = False
+          Size.Width = 150.000000000000000000
+        end
+        object TypeColumn: TStringColumn
+          Header = #1058#1088#1077#1073#1091#1077#1084#1099#1081' '#1090#1080#1087' / '#1091#1089#1083#1086#1074#1080#1077
+          HeaderSettings.TextSettings.WordWrap = False
+          Size.Width = 320.000000000000000000
+        end
+        object ScopeColumn: TStringColumn
+          Header = #1054#1073#1083#1072#1089#1090#1100' '#1087#1086#1080#1089#1082#1072
+          HeaderSettings.TextSettings.WordWrap = False
+          Size.Width = 160.000000000000000000
+        end
+        object OwnerColumn: TStringColumn
+          Header = #1054#1073#1098#1103#1074#1083#1077#1085' '#1074
+          HeaderSettings.TextSettings.WordWrap = False
+          Size.Width = 180.000000000000000000
+        end
+      end
+    end
+  end
+end

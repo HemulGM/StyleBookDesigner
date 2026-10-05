@@ -1,0 +1,48 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{C459BD1D-75EA-4B83-8B64-59CA39566F44}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="StyleBookDesigner.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="D2D_Issue\Project83.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="StyleBookDesigner">
+        <MSBuild Projects="StyleBookDesigner.dproj"/>
+    </Target>
+    <Target Name="StyleBookDesigner:Clean">
+        <MSBuild Projects="StyleBookDesigner.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="StyleBookDesigner:Make">
+        <MSBuild Projects="StyleBookDesigner.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Project83">
+        <MSBuild Projects="D2D_Issue\Project83.dproj"/>
+    </Target>
+    <Target Name="Project83:Clean">
+        <MSBuild Projects="D2D_Issue\Project83.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="Project83:Make">
+        <MSBuild Projects="D2D_Issue\Project83.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="StyleBookDesigner;Project83"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="StyleBookDesigner:Clean;Project83:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="StyleBookDesigner:Make;Project83:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

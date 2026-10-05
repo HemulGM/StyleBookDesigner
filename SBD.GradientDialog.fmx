@@ -1,0 +1,350 @@
+object GradientEditorForm: TGradientEditorForm
+  Left = 0
+  Top = 0
+  Caption = #1052#1072#1089#1090#1077#1088' '#1075#1088#1072#1076#1080#1077#1085#1090#1072
+  ClientHeight = 692
+  ClientWidth = 720
+  Position = OwnerFormCenter
+  Constraints.MinHeight = 520.000000000000000000
+  Constraints.MinWidth = 660.000000000000000000
+  FormFactor.Width = 720
+  FormFactor.Height = 692
+  FormFactor.Devices = [Desktop]
+  DesignerMasterStyle = 0
+  object DialogHeader: TLayout
+    Align = Top
+    Padding.Left = 24.000000000000000000
+    Padding.Top = 20.000000000000000000
+    Padding.Right = 24.000000000000000000
+    Size.Width = 720.000000000000000000
+    Size.Height = 88.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 0
+    object DialogTitle: TLabel
+      Align = Top
+      StyledSettings = [FontColor]
+      Position.X = 24.000000000000000000
+      Position.Y = 20.000000000000000000
+      Size.Width = 672.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.Font.Size = 20.000000000000000000
+      Text = #1052#1072#1089#1090#1077#1088' '#1075#1088#1072#1076#1080#1077#1085#1090#1072
+    end
+    object HelpLabel: TLabel
+      Align = Top
+      Position.X = 24.000000000000000000
+      Position.Y = 52.000000000000000000
+      Size.Width = 672.000000000000000000
+      Size.Height = 28.000000000000000000
+      Size.PlatformDefault = False
+      Text = 
+        #1053#1072#1089#1090#1088#1086#1081#1090#1077' '#1085#1072#1087#1088#1072#1074#1083#1077#1085#1080#1077' '#1080' '#1094#1074#1077#1090#1086#1074#1099#1077' '#1090#1086#1095#1082#1080'. '#1064#1072#1093#1084#1072#1090#1085#1099#1081' '#1092#1086#1085' '#1087#1086#1082#1072#1079#1099#1074#1072#1077#1090 +
+        ' '#1087#1088#1086#1079#1088#1072#1095#1085#1086#1089#1090#1100'.'
+    end
+  end
+  object Actions: TPanel
+    Align = Bottom
+    Padding.Left = 24.000000000000000000
+    Padding.Top = 24.000000000000000000
+    Padding.Right = 24.000000000000000000
+    Padding.Bottom = 24.000000000000000000
+    Position.Y = 604.000000000000000000
+    Size.Width = 720.000000000000000000
+    Size.Height = 88.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'panelstyle_fill_strong_dialog'
+    TabOrder = 2
+    object CancelButton: TButton
+      Align = Right
+      Cancel = True
+      ModalResult = 2
+      Margins.Top = 4.000000000000000000
+      Margins.Bottom = 4.000000000000000000
+      Position.X = 584.000000000000000000
+      Position.Y = 28.000000000000000000
+      Size.Width = 112.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 1
+      Text = #1054#1090#1084#1077#1085#1072
+    end
+    object ApplyButton: TButton
+      Align = Right
+      ModalResult = 1
+      Margins.Top = 4.000000000000000000
+      Margins.Right = 8.000000000000000000
+      Margins.Bottom = 4.000000000000000000
+      Position.X = 456.000000000000000000
+      Position.Y = 28.000000000000000000
+      Size.Width = 120.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = 'buttonstyle_accent'
+      TabOrder = 0
+      Text = #1055#1088#1080#1084#1077#1085#1080#1090#1100
+    end
+  end
+  object DialogBody: TVertScrollBox
+    Align = Client
+    Margins.Left = 24.000000000000000000
+    Margins.Right = 24.000000000000000000
+    Margins.Bottom = 16.000000000000000000
+    Size.Width = 672.000000000000000000
+    Size.Height = 500.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 1
+    Viewport.Width = 672.000000000000000000
+    Viewport.Height = 500.000000000000000000
+    object BodyContent: TLayout
+      Align = Top
+      Size.Width = 672.000000000000000000
+      Size.Height = 500.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+      object PreviewRow: TLayout
+        Align = Top
+        Size.Width = 672.000000000000000000
+        Size.Height = 224.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 0
+        OnResize = GeometryResize
+        object Preview: TPaintBox
+          Align = Left
+          HitTest = False
+          Size.Width = 224.000000000000000000
+          Size.Height = 224.000000000000000000
+          Size.PlatformDefault = False
+          OnPaint = PreviewPaint
+        end
+        object Geometry: TLayout
+          Align = Client
+          Margins.Left = 24.000000000000000000
+          Size.Width = 424.000000000000000000
+          Size.Height = 224.000000000000000000
+          Size.PlatformDefault = False
+          TabOrder = 0
+          object TypeLabel: TLabel
+            Position.Y = 4.000000000000000000
+            Size.Width = 104.000000000000000000
+            Size.Height = 28.000000000000000000
+            Size.PlatformDefault = False
+            Text = #1058#1080#1087' '#1075#1088#1072#1076#1080#1077#1085#1090#1072
+          end
+          object TypeCombo: TComboBox
+            Items.Strings = (
+              #1051#1080#1085#1077#1081#1085#1099#1081
+              #1056#1072#1076#1080#1072#1083#1100#1085#1099#1081)
+            Position.X = 120.000000000000000000
+            Size.Width = 304.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 0
+            OnChange = TypeChanged
+          end
+          object AngleLabel: TLabel
+            Position.Y = 44.000000000000000000
+            Size.Width = 104.000000000000000000
+            Size.Height = 28.000000000000000000
+            Size.PlatformDefault = False
+            Text = #1059#1075#1086#1083' ('#176')'
+          end
+          object AngleDial: TArcDial
+            Hint = #1059#1075#1086#1083' '#1083#1080#1085#1077#1081#1085#1086#1075#1086' '#1075#1088#1072#1076#1080#1077#1085#1090#1072
+            Position.Y = 76.000000000000000000
+            ShowValue = True
+            Size.Width = 104.000000000000000000
+            Size.Height = 104.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 1
+            Frequency = 0.100000000000000000
+            ParentShowHint = False
+            ShowHint = True
+            OnChange = AngleChanged
+          end
+          object AngleEdit: TSpinBox
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            TabOrder = 2
+            Cursor = crIBeam
+            DecimalDigits = 1
+            Min = -180.000000000000000000
+            Max = 180.000000000000000000
+            ValueType = Float
+            KeyboardType = NumbersAndPunctuation
+            Position.X = 120.000000000000000000
+            Position.Y = 76.000000000000000000
+            Size.Width = 128.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            OnChange = AngleChanged
+          end
+          object AngleHelp: TLabel
+            Position.X = 120.000000000000000000
+            Position.Y = 116.000000000000000000
+            Size.Width = 304.000000000000000000
+            Size.Height = 64.000000000000000000
+            Size.PlatformDefault = False
+            Text = 
+              '0'#176' '#8212' '#1074#1087#1088#1072#1074#1086', 90'#176' '#8212' '#1074#1074#1077#1088#1093'. '#1055#1086#1074#1077#1088#1085#1080#1090#1077' '#1076#1080#1089#1082' '#1080#1083#1080' '#1074#1074#1077#1076#1080#1090#1077' '#1090#1086#1095#1085#1099#1081' '#1091#1075#1086#1083 +
+              '.'
+          end
+          object CenterXLabel: TLabel
+            Position.Y = 192.000000000000000000
+            Size.Width = 98.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            Text = #1062#1077#1085#1090#1088' X (%)'
+          end
+          object CenterXEdit: TSpinBox
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            TabOrder = 3
+            Cursor = crIBeam
+            DecimalDigits = 1
+            Min = -1000.000000000000000000
+            Max = 1000.000000000000000000
+            ValueType = Float
+            KeyboardType = NumbersAndPunctuation
+            Position.X = 100.000000000000000000
+            Position.Y = 192.000000000000000000
+            Size.Width = 100.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            OnChange = CenterChanged
+          end
+          object CenterYLabel: TLabel
+            Position.X = 224.000000000000000000
+            Position.Y = 192.000000000000000000
+            Size.Width = 98.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            Text = #1062#1077#1085#1090#1088' Y (%)'
+          end
+          object CenterYEdit: TSpinBox
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            TabOrder = 4
+            Cursor = crIBeam
+            DecimalDigits = 1
+            Min = -1000.000000000000000000
+            Max = 1000.000000000000000000
+            ValueType = Float
+            KeyboardType = NumbersAndPunctuation
+            Position.X = 324.000000000000000000
+            Position.Y = 192.000000000000000000
+            Size.Width = 100.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            OnChange = CenterChanged
+          end
+        end
+      end
+      object PointsTitle: TLabel
+        Align = Top
+        Margins.Top = 12.000000000000000000
+        Position.Y = 236.000000000000000000
+        Size.Width = 672.000000000000000000
+        Size.Height = 28.000000000000000000
+        Size.PlatformDefault = False
+        Text = #1062#1074#1077#1090#1086#1074#1099#1077' '#1090#1086#1095#1082#1080
+      end
+      object ValidationError: TLabel
+        Align = Bottom
+        StyledSettings = [Family, Size, Style]
+        Position.Y = 472.000000000000000000
+        Size.Width = 672.000000000000000000
+        Size.Height = 28.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.FontColor = xFFDD3333
+      end
+      object PointsRow: TLayout
+        Align = Client
+        Size.Width = 672.000000000000000000
+        Size.Height = 208.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        object PointTools: TLayout
+          Align = Right
+          Margins.Left = 24.000000000000000000
+          Position.X = 392.000000000000000000
+          Size.Width = 280.000000000000000000
+          Size.Height = 208.000000000000000000
+          Size.PlatformDefault = False
+          TabOrder = 1
+          object OffsetLabel: TLabel
+            Size.Width = 136.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            Text = #1055#1086#1083#1086#1078#1077#1085#1080#1077' (%)'
+          end
+          object OffsetEdit: TSpinBox
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            TabOrder = 0
+            Cursor = crIBeam
+            DecimalDigits = 1
+            ValueType = Float
+            KeyboardType = NumbersAndPunctuation
+            Position.X = 148.000000000000000000
+            Size.Width = 132.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            OnChange = OffsetChanged
+          end
+          object ColorButton: TButton
+            Hint = #1042#1099#1073#1077#1088#1080#1090#1077' '#1094#1074#1077#1090' '#1080' '#1087#1088#1086#1079#1088#1072#1095#1085#1086#1089#1090#1100
+            Position.Y = 44.000000000000000000
+            Size.Width = 280.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 1
+            Text = #1062#1074#1077#1090
+            ParentShowHint = False
+            ShowHint = True
+            OnClick = ColorClick
+          end
+          object AddButton: TButton
+            Position.Y = 88.000000000000000000
+            Size.Width = 136.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 2
+            Text = #1044#1086#1073#1072#1074#1080#1090#1100
+            OnClick = AddClick
+          end
+          object DeleteButton: TButton
+            Position.X = 144.000000000000000000
+            Position.Y = 88.000000000000000000
+            Size.Width = 136.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 3
+            Text = #1059#1076#1072#1083#1080#1090#1100
+            OnClick = DeleteClick
+          end
+          object ReverseButton: TButton
+            Position.Y = 132.000000000000000000
+            Size.Width = 280.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 4
+            Text = #1056#1072#1079#1074#1077#1088#1085#1091#1090#1100' '#1094#1074#1077#1090#1072
+            OnClick = ReverseClick
+          end
+        end
+        object PointList: TListBox
+          Align = Client
+          Size.Width = 368.000000000000000000
+          Size.Height = 208.000000000000000000
+          Size.PlatformDefault = False
+          TabOrder = 0
+          OnDblClick = ColorClick
+          DisableFocusEffect = True
+          DefaultItemStyles.ItemStyle = ''
+          DefaultItemStyles.GroupHeaderStyle = ''
+          DefaultItemStyles.GroupFooterStyle = ''
+          OnChange = PointSelected
+          Viewport.Width = 364.000000000000000000
+          Viewport.Height = 204.000000000000000000
+        end
+      end
+    end
+  end
+end

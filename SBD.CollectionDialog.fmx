@@ -1,0 +1,153 @@
+object CollectionDialog: TCollectionDialog
+  Left = 0
+  Top = 0
+  Caption = #1056#1077#1076#1072#1082#1090#1086#1088' '#1082#1086#1083#1083#1077#1082#1094#1080#1080
+  ClientHeight = 620
+  ClientWidth = 900
+  Position = OwnerFormCenter
+  StyleBook = FormMain.StyleBookWinUI3
+  Constraints.MinHeight = 440.000000000000000000
+  Constraints.MinWidth = 720.000000000000000000
+  FormFactor.Width = 320
+  FormFactor.Height = 480
+  FormFactor.Devices = [Desktop]
+  DesignerMasterStyle = 0
+  object DialogHeader: TLayout
+    Align = Top
+    Padding.Left = 24.000000000000000000
+    Padding.Top = 24.000000000000000000
+    Padding.Right = 24.000000000000000000
+    Padding.Bottom = 24.000000000000000000
+    Size.Width = 900.000000000000000000
+    Size.Height = 112.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 0
+    object DialogTitle: TLabel
+      Align = Top
+      StyledSettings = [FontColor]
+      Position.X = 24.000000000000000000
+      Position.Y = 24.000000000000000000
+      Size.Width = 852.000000000000000000
+      Size.Height = 36.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.Font.Size = 20.000000000000000000
+      TextSettings.Font.StyleExt = {00070000000000000004000000}
+      Text = #1069#1083#1077#1084#1077#1085#1090#1099' '#1082#1086#1083#1083#1077#1082#1094#1080#1080
+    end
+    object HelpLabel: TLabel
+      Align = Top
+      StyledSettings = [FontColor]
+      Position.X = 24.000000000000000000
+      Position.Y = 60.000000000000000000
+      Size.Width = 852.000000000000000000
+      Size.Height = 28.000000000000000000
+      Size.PlatformDefault = False
+      Text = #1044#1086#1073#1072#1074#1083#1103#1081#1090#1077' '#1101#1083#1077#1084#1077#1085#1090#1099' '#1080' '#1088#1077#1076#1072#1082#1090#1080#1088#1091#1081#1090#1077' '#1080#1093' '#1089#1074#1086#1081#1089#1090#1074#1072
+    end
+  end
+  object Actions: TPanel
+    Align = Bottom
+    Padding.Left = 24.000000000000000000
+    Padding.Top = 24.000000000000000000
+    Padding.Right = 24.000000000000000000
+    Padding.Bottom = 24.000000000000000000
+    Position.Y = 532.000000000000000000
+    Size.Width = 900.000000000000000000
+    Size.Height = 88.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'panelstyle_fill_strong_dialog'
+    TabOrder = 2
+    object CancelButton: TButton
+      Align = Right
+      Cancel = True
+      ModalResult = 2
+      Margins.Top = 4.000000000000000000
+      Margins.Right = 8.000000000000000000
+      Margins.Bottom = 4.000000000000000000
+      Position.X = 756.000000000000000000
+      Position.Y = 28.000000000000000000
+      Size.Width = 112.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = 'buttonstyle'
+      Text = #1054#1090#1084#1077#1085#1072
+    end
+    object ApplyButton: TButton
+      Align = Right
+      Default = True
+      ModalResult = 1
+      Margins.Top = 4.000000000000000000
+      Margins.Right = 8.000000000000000000
+      Margins.Bottom = 4.000000000000000000
+      Position.X = 628.000000000000000000
+      Position.Y = 28.000000000000000000
+      Size.Width = 120.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = 'buttonstyle_accent'
+      Text = #1055#1088#1080#1084#1077#1085#1080#1090#1100
+    end
+  end
+  object DialogBody: TLayout
+    Align = Client
+    Margins.Left = 24.000000000000000000
+    Margins.Right = 24.000000000000000000
+    Size.Width = 852.000000000000000000
+    Size.Height = 420.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 1
+    object CollectionTools: TLayout
+      Align = Top
+      Margins.Bottom = 12.000000000000000000
+      Size.Width = 852.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+      object AddButton: TButton
+        Tag = 1
+        Align = Left
+        Margins.Right = 8.000000000000000000
+        Size.Width = 104.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        Text = #1044#1086#1073#1072#1074#1080#1090#1100
+        OnClick = CollectionAction
+      end
+      object DeleteButton: TButton
+        Tag = 2
+        Align = Left
+        Margins.Right = 8.000000000000000000
+        Position.X = 112.000000000000000000
+        Size.Width = 96.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        Text = #1059#1076#1072#1083#1080#1090#1100
+        OnClick = CollectionAction
+      end
+    end
+    object FList: TListBox
+      Align = Left
+      Margins.Right = 16.000000000000000000
+      Position.Y = 44.000000000000000000
+      Size.Width = 224.000000000000000000
+      Size.Height = 376.000000000000000000
+      Size.PlatformDefault = False
+      ScrollAnimation = True
+      DisableFocusEffect = True
+      DefaultItemStyles.ItemStyle = ''
+      DefaultItemStyles.GroupHeaderStyle = ''
+      DefaultItemStyles.GroupFooterStyle = ''
+      OnChange = SelectionChanged
+      Viewport.Width = 224.000000000000000000
+      Viewport.Height = 376.000000000000000000
+    end
+    object PropertyHost: TLayout
+      Align = Client
+      Size.Width = 612.000000000000000000
+      Size.Height = 376.000000000000000000
+      Size.PlatformDefault = False
+    end
+  end
+end
