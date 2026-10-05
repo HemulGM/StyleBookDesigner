@@ -30,7 +30,7 @@ type
 implementation
 
 uses
-  SBD.Main, SBD.PropertyInspector, SBD.Localization;
+  SBD.PropertyInspector, SBD.Localization;
 
 {$R *.fmx}
 

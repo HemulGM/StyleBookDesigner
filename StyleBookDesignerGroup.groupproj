@@ -6,6 +6,9 @@
         <Projects Include="StyleBookDesigner.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="Tests\StyleBookDesignerTests.dproj">
+            <Dependencies/>
+        </Projects>
         <Projects Include="D2D_Issue\Project83.dproj">
             <Dependencies/>
         </Projects>
@@ -35,14 +38,23 @@
     <Target Name="Project83:Make">
         <MSBuild Projects="D2D_Issue\Project83.dproj" Targets="Make"/>
     </Target>
+    <Target Name="StyleBookDesignerTests">
+        <MSBuild Projects="Tests\StyleBookDesignerTests.dproj"/>
+    </Target>
+    <Target Name="StyleBookDesignerTests:Clean">
+        <MSBuild Projects="Tests\StyleBookDesignerTests.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="StyleBookDesignerTests:Make">
+        <MSBuild Projects="Tests\StyleBookDesignerTests.dproj" Targets="Make"/>
+    </Target>
     <Target Name="Build">
-        <CallTarget Targets="StyleBookDesigner;Project83"/>
+        <CallTarget Targets="StyleBookDesigner;StyleBookDesignerTests;Project83"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="StyleBookDesigner:Clean;Project83:Clean"/>
+        <CallTarget Targets="StyleBookDesigner:Clean;StyleBookDesignerTests:Clean;Project83:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="StyleBookDesigner:Make;Project83:Make"/>
+        <CallTarget Targets="StyleBookDesigner:Make;StyleBookDesignerTests:Make;Project83:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

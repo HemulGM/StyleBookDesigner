@@ -17,43 +17,10 @@ uses
   FMX.MagnifierGlass, FMX.Media, FMX.Controls3D, FMX.Objects3D, FMX.Layers3D,
   FMX.Viewport3D, FMX.MaterialSources, FMX.WebBrowser, FMX.Maps, FMX.Skia,
   FMX.ImgList, FMX.Consts, FMX.BehaviorManager, WinUI3.Form, FMX.Platform,
-  SBD.PropertyInspector, SBD.StyleCatalog, SBD.BitmapLinksDialog,
-  System.ImageList, System.IniFiles;
+  SBD.EditorTypes, SBD.StyleDocument, SBD.PropertyInspector, SBD.StyleCatalog,
+  SBD.BitmapLinksDialog, System.ImageList, System.IniFiles;
 
 type
-  TResourceTheme = (rtLight, rtDark);
-
-  TNamedStyleValue = class
-  private
-    FLightValue, FDarkValue: string;
-    FInitialized: Boolean;
-    function GetValue: string;
-    procedure SetValue(const Text: string);
-    procedure SetLightValue(const Text: string);
-    procedure SetDarkValue(const Text: string);
-  public
-    Name, Kind: string;
-    Theme: TResourceTheme;
-    function ValueFor(ATheme: TResourceTheme): string;
-    property LightValue: string read FLightValue write SetLightValue;
-    property DarkValue: string read FDarkValue write SetDarkValue;
-    property Value: string read GetValue write SetValue;
-  end;
-
-  TStyleValueBinding = class
-    TargetName, PropertyPath, ResourceName: string;
-  end;
-
-  TStyleGroup = class
-    ID, Title, ParentID: string;
-  end;
-
-  TPropertyEntry = class
-    Instance: TObject;
-    Prop: TRttiProperty;
-    Path: string;
-  end;
-
   TFormMain = class(TWinUIForm)
     FLayout: TLayout;
     MainBackground: TRectangle;
@@ -204,19 +171,16 @@ type
     procedure WorkspaceSettingsClick(Sender: TObject);
     procedure WorkspaceFocusChanged(Sender: TObject);
     procedure WorkspaceOutsideDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
-  private
+  protected
     FPreferencesFile: string;
     procedure LoadApplicationTheme;
     procedure SaveApplicationTheme;
     procedure PositionWorkspaceSettings;
-  private
+  protected
+    // Internal editor operations are available to derived test fixtures.
     FProperties: TSBDPropertyInspector;
-    FGroups: TObjectList<TStyleGroup>;
-    FAssignments: TDictionary<string, string>;
-    FStyleClasses: TDictionary<string, string>;
     FPreviewSource: TFmxObject;
     FSelectedGroup: TStyleGroup;
-    FPendingProjectView: string;
     FTreeModelRoot: TFmxObject;
     FTreeItems: TDictionary<Pointer, TTreeViewItem>;
     FTreeRefreshPending: Boolean;
@@ -228,11 +192,9 @@ type
     FLastTreePhases, FLastLoadPhases: string;
     FTreeReorderedCount, FTreeReparentedCount: Integer;
     FPreviewDirty, FDesignDirty, FSavedStatePending: Boolean;
-    FRoot, FSelected, FDesignRoot, FResource: TFmxObject;
+    FDocument: TStyleDocument;
+    FSelected, FDesignRoot, FResource: TFmxObject;
     FEntries: TObjectList<TPropertyEntry>;
-    FValues: TObjectList<TNamedStyleValue>;
-    FResourceTheme: TResourceTheme;
-    FBindings: TObjectList<TStyleValueBinding>;
     FClasses: TDictionary<string, TFmxObjectClass>;
     FNames: TStringList;
     FUndo, FRedo: TList<TBytes>;
@@ -364,6 +326,7 @@ type
     procedure EditGradient(Gradient: TGradient; Brush: TBrush; const Path: string);
     function ApplyGradient(Gradient, Draft: TGradient; Brush: TBrush; const Path: string): Boolean;
     procedure EditStrings(AStrings: TStrings);
+    function ProjectViewJSON: string;
     function MetadataJSON(IncludeView: Boolean = False): string;
     procedure LoadMetadata(const Text: string);
     function FindNamedObject(const Name: string): TFmxObject;
@@ -390,15 +353,16 @@ type
     procedure ValidateBinding(Value: TNamedStyleValue; Binding: TStyleValueBinding);
     property SelectedObject: TFmxObject read FSelected;
     property PropertyEntries: TObjectList<TPropertyEntry> read FEntries;
-    property NamedValues: TObjectList<TNamedStyleValue> read FValues;
-    property ResourceTheme: TResourceTheme read FResourceTheme write SetResourceTheme;
-    property ValueBindings: TObjectList<TStyleValueBinding> read FBindings;
+    function GetNamedValues: TObjectList<TNamedStyleValue>;
+    function GetValueBindings: TObjectList<TStyleValueBinding>;
+    function GetResourceTheme: TResourceTheme;
+    property NamedValues: TObjectList<TNamedStyleValue> read GetNamedValues;
+    property ResourceTheme: TResourceTheme read GetResourceTheme write SetResourceTheme;
+    property ValueBindings: TObjectList<TStyleValueBinding> read GetValueBindings;
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     procedure MouseMove(Shift: TShiftState; AFormX, AFormY: Single); override;
     procedure MouseLeave; override;
-    procedure SelfTest;
-    procedure PerformanceTest(const FileName: string);
     function ApplyBitmapLinks(Dialog: TBitmapLinksEditorForm): Boolean;
   end;
 
@@ -408,10 +372,10 @@ var
 implementation
 
 uses
-  System.Messaging, SBD.PropertyInspector.Tests, SBD.Localization, SBD.Preview,
-  WinUI3.Style, SBD.CollectionDialog, SBD.ValuesDialog, SBD.TextDialog,
-  SBD.GradientDialog, SBD.ColorDialog, SBD.StyleCatalogDialog, SBD.Dialogs,
-  WinUI3.Dialogs;
+  System.Messaging, SBD.Localization, SBD.Preview, WinUI3.Style,
+  SBD.CollectionDialog, SBD.ValuesDialog, SBD.TextDialog, SBD.GradientDialog,
+  SBD.ColorDialog, SBD.StyleCatalogDialog, SBD.Dialogs, WinUI3.Dialogs,
+  SBD.StyleTree, SBD.StyleIO, SBD.StyleProperties;
 
 {$R *.fmx}
 
@@ -419,557 +383,6 @@ type
   TControlAccess = class(TControl);
 
   TComponentAccess = class(TComponent);
-
-  TFmxObjectAccess = class(TFmxObject);
-
-  TStyleTreeView = class(TTreeView)
-  private
-    FSelecting: Boolean;
-    FRangeAnchor: TTreeViewItem;
-    procedure SetRangeAnchor(Value: TTreeViewItem);
-  protected
-    procedure DoChange; override;
-    procedure SetSelected(const Value: TTreeViewItem); override;
-    procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single); override;
-    procedure KeyDown(var Key: Word; var KeyChar: WideChar; Shift: TShiftState); override;
-    procedure Notification(AComponent: TComponent; Operation: TOperation); override;
-  public
-    function SelectedItems: TArray<TTreeViewItem>;
-    procedure ChooseItem(Item: TTreeViewItem; Shift: TShiftState; RightClick: Boolean = False);
-    procedure RefreshOrder;
-  end;
-
-  TClipboardStyleBook = class(TStyleBook)
-  protected
-    procedure Loaded; override;
-  end;
-
-  TEditorChildren = class(TList<TFmxObject>)
-    procedure Collect(Child: TComponent);
-  end;
-
-  TRejectingStyleStream = class(TMemoryStream)
-  public
-    function Write(const Buffer; Count: Longint): Longint; override;
-  end;
-
-const
-  MinWorkspaceZoom = 50;
-  MaxWorkspaceZoom = 2000;
-  acNew = 1;
-  acOpen = 2;
-  acSave = 3;
-  acSaveAs = 4;
-  acDefault = 5;
-  acUndo = 6;
-  acRedo = 7;
-  acAdd = 8;
-  acDelete = 9;
-  acDuplicate = 10;
-  acUp = 11;
-  acDown = 12;
-  acIndent = 13;
-  acOutdent = 14;
-  acPreview = 15;
-  acValidate = 16;
-  acNewResource = 17;
-  acValues = 18;
-  acBind = 19;
-  acUnbind = 20;
-  acNewGroup = 21;
-  acRenameGroup = 22;
-  acMoveToGroup = 23;
-  acUngroup = 24;
-  acFront = 25;
-  acBack = 26;
-  acPasteStyleBook = 27;
-  acCopyStyleBook = 28;
-  acCopyObject = 29;
-  acPasteObject = 30;
-  acSortStyles = 31;
-  acStyleCatalog = 32;
-  acAssignStyleClass = 33;
-  acAutoStyleClass = 34;
-
-procedure UnpackStyleBinaries(Root: TFmxObject); forward;
-
-function TreeItems(Tree: TTreeView): TArray<TTreeViewItem>; forward;
-
-function TNamedStyleValue.ValueFor(ATheme: TResourceTheme): string;
-begin
-  if ATheme = rtDark then
-    Result := FDarkValue
-  else
-    Result := FLightValue;
-end;
-
-function TNamedStyleValue.GetValue: string;
-begin
-  Result := ValueFor(Theme);
-end;
-
-procedure TNamedStyleValue.SetValue(const Text: string);
-begin
-  // Initial values and legacy callers start both themes from the same value.
-  if not FInitialized then
-  begin
-    FLightValue := Text;
-    FDarkValue := Text;
-    FInitialized := True;
-  end
-  else if Theme = rtDark then
-    FDarkValue := Text
-  else
-    FLightValue := Text;
-end;
-
-procedure TNamedStyleValue.SetLightValue(const Text: string);
-begin
-  FLightValue := Text;
-  FInitialized := True;
-end;
-
-procedure TNamedStyleValue.SetDarkValue(const Text: string);
-begin
-  FDarkValue := Text;
-  FInitialized := True;
-end;
-
-function TStyleTreeView.SelectedItems: TArray<TTreeViewItem>;
-var
-  Items: TList<TTreeViewItem>;
-begin
-  Items := TList<TTreeViewItem>.Create;
-  try
-    for var Item in TreeItems(Self) do
-      if Item.IsSelected then
-        Items.Add(Item);
-    Result := Items.ToArray;
-  finally
-    Items.Free;
-  end;
-end;
-
-procedure TStyleTreeView.DoChange;
-begin
-  if not FSelecting then
-    inherited;
-end;
-
-procedure TStyleTreeView.SetRangeAnchor(Value: TTreeViewItem);
-begin
-  if FRangeAnchor = Value then
-    Exit;
-  if FRangeAnchor <> nil then
-    FRangeAnchor.RemoveFreeNotification(Self);
-  FRangeAnchor := Value;
-  if FRangeAnchor <> nil then
-    FRangeAnchor.FreeNotification(Self);
-end;
-
-procedure TStyleTreeView.SetSelected(const Value: TTreeViewItem);
-begin
-  if FSelecting then
-  begin
-    inherited;
-    Exit;
-  end;
-  FSelecting := True;
-  try
-    for var Item in SelectedItems do
-      if Item <> Value then
-        Item.IsSelected := False;
-    inherited;
-    SetRangeAnchor(Value);
-  finally
-    FSelecting := False;
-  end;
-  DoChange;
-end;
-
-procedure TStyleTreeView.ChooseItem(Item: TTreeViewItem; Shift: TShiftState; RightClick: Boolean);
-var
-  Keep, Active: TTreeViewItem;
-  ToggleOff: Boolean;
-  First, Last: Integer;
-begin
-  if Item = nil then
-    Exit;
-  FSelecting := True;
-  try
-    Active := Item;
-    if (ssShift in Shift) and not RightClick and (FRangeAnchor <> nil) and
-      (FRangeAnchor.Level = Item.Level) then
-    begin
-      First := Min(FRangeAnchor.GlobalIndex, Item.GlobalIndex);
-      Last := Max(FRangeAnchor.GlobalIndex, Item.GlobalIndex);
-      for var Node in TreeItems(Self) do
-        Node.IsSelected := False;
-      for var I := First to Last do
-      begin
-        var Node := ItemByGlobalIndex(I);
-        if Node.Level = Item.Level then
-          Node.IsSelected := True;
-      end;
-    end
-    else if ((ssCtrl in Shift) and not RightClick) or (RightClick and Item.IsSelected) then
-    begin
-      ToggleOff := (ssCtrl in Shift) and not RightClick and Item.IsSelected;
-      for Keep in SelectedItems do
-        if Keep.Level <> Item.Level then
-          Keep.IsSelected := False;
-      Item.IsSelected := not ToggleOff;
-      if ToggleOff then
-      begin
-        Active := nil;
-        for Keep in SelectedItems do
-          Active := Keep;
-      end;
-      SetRangeAnchor(Active);
-    end
-    else
-    begin
-      for Keep in SelectedItems do
-        Keep.IsSelected := False;
-      Item.IsSelected := True;
-      SetRangeAnchor(Item);
-    end;
-    inherited SetSelected(Active);
-  finally
-    FSelecting := False;
-  end;
-  DoChange;
-end;
-
-procedure TStyleTreeView.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
-var
-  Item, Anchor: TTreeViewItem;
-  Previous: TArray<TTreeViewItem>;
-  DragAllowed, KeepSelection: Boolean;
-begin
-  Item := ItemByPoint(X, Y);
-  KeepSelection := (Item <> nil) and Item.IsSelected and
-    (Button = TMouseButton.mbLeft) and ([ssCtrl, ssShift] * Shift = []);
-  Previous := SelectedItems;
-  Anchor := FRangeAnchor;
-  DragAllowed := AllowDrag;
-  FSelecting := True;
-  MultiSelect := False;
-  if [ssCtrl, ssShift] * Shift <> [] then
-    AllowDrag := False;
-  try
-    inherited;
-  finally
-    AllowDrag := DragAllowed;
-    MultiSelect := True;
-    FSelecting := False;
-  end;
-  if (Item <> nil) and (Button in [TMouseButton.mbLeft, TMouseButton.mbRight]) then
-  begin
-    FSelecting := True;
-    try
-      for var Node in TreeItems(Self) do
-        Node.IsSelected := False;
-      for var Node in Previous do
-        Node.IsSelected := True;
-      SetRangeAnchor(Anchor);
-    finally
-      FSelecting := False;
-    end;
-    ChooseItem(Item, Shift, (Button = TMouseButton.mbRight) or KeepSelection);
-  end;
-end;
-
-procedure TStyleTreeView.KeyDown(var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
-var
-  Target: TTreeViewItem;
-  Index, Direction: Integer;
-begin
-  if (Key = Ord('A')) and (ssCtrl in Shift) and (Selected <> nil) then
-  begin
-    FSelecting := True;
-    try
-      for var Node in TreeItems(Self) do
-        Node.IsSelected := False;
-      for var I := 0 to GlobalCount - 1 do
-      begin
-        var Node := ItemByGlobalIndex(I);
-        Node.IsSelected := (Node.Level = Selected.Level) and Node.IsVisible;
-      end;
-    finally
-      FSelecting := False;
-    end;
-    Key := 0;
-    DoChange;
-    Exit;
-  end;
-  if (Selected <> nil) and (Key in [vkUp, vkDown, vkHome, vkEnd]) then
-  begin
-    Index := Selected.GlobalIndex;
-    Direction := 1;
-    if Key in [vkUp, vkHome] then
-      Direction := -1;
-    if Key = vkHome then
-    begin
-      Index := -1;
-      Direction := 1;
-    end
-    else if Key = vkEnd then
-    begin
-      Index := GlobalCount;
-      Direction := -1;
-    end;
-    Target := Selected;
-    repeat
-      Inc(Index, Direction);
-      if (Index < 0) or (Index >= GlobalCount) then
-        Break;
-      var Node := ItemByGlobalIndex(Index);
-      if Node.IsVisible and (not (ssShift in Shift) or (Node.Level = Selected.Level)) then
-      begin
-        Target := Node;
-        Break;
-      end;
-    until False;
-    ChooseItem(Target, Shift - [ssCtrl]);
-    Key := 0;
-    Exit;
-  end;
-  inherited;
-end;
-
-procedure TStyleTreeView.Notification(AComponent: TComponent; Operation: TOperation);
-begin
-  if (Operation = opRemove) and (AComponent = FRangeAnchor) then
-    FRangeAnchor := nil;
-  inherited;
-end;
-
-procedure TStyleTreeView.RefreshOrder;
-begin
-  // FMX skips global-index invalidation when row Index changes during a batch.
-  // Notify the content once, before EndUpdate calculates geometry and hit tests.
-  if Count > 0 then
-    ContentInsertObject(0, Items[0]);
-end;
-
-function ComponentText(Component: TComponent): string;
-var
-  Binary: TMemoryStream;
-  Text: TStringStream;
-begin
-  Binary := TMemoryStream.Create;
-  Text := TStringStream.Create('', TEncoding.UTF8);
-  try
-    Binary.WriteComponent(Component);
-    Binary.Position := 0;
-    ObjectBinaryToText(Binary, Text);
-    Result := Text.DataString;
-  finally
-    Text.Free;
-    Binary.Free;
-  end;
-end;
-
-function ClipboardService: IFMXClipboardService;
-begin
-  if not TPlatformServices.Current.SupportsPlatformService(IFMXClipboardService, Result) then
-    raise Exception.Create(Translate('Буфер обмена недоступен.'));
-end;
-
-function ClipboardText: string;
-begin
-  var Value := ClipboardService.GetClipboard;
-  if not Value.TryAsType<string>(Result) or Result.Trim.IsEmpty then
-    raise Exception.Create(Translate('Буфер обмена не содержит текст DFM/FMX.'));
-end;
-
-procedure TClipboardStyleBook.Loaded;
-begin
-  // This temporary component only supplies embedded styles. Do not load its
-  // FileName, apply UseStyleManager or broadcast style changes to the editor.
-  ChooseStyleIndex;
-end;
-
-function ReadStyleBookText(const Text: string): TFmxObject;
-var
-  Source: TStringStream;
-  Binary: TMemoryStream;
-  Reader: TReader;
-  Book: TClipboardStyleBook;
-  Flags: TFilerFlags;
-  ChildPosition: Integer;
-begin
-  if Text.Trim.IsEmpty then
-    raise Exception.Create(Translate('Буфер обмена не содержит текст TStyleBook.'));
-  Source := TStringStream.Create(Text.Trim, TEncoding.UTF8);
-  Binary := TMemoryStream.Create;
-  Book := TClipboardStyleBook.Create(nil);
-  try
-    ObjectTextToBinary(Source, Binary);
-    Binary.Position := 0;
-    Reader := TReader.Create(Binary, 4096);
-    try
-      Reader.ReadSignature;
-      Reader.ReadPrefix(Flags, ChildPosition);
-      if not SameText(Reader.ReadStr, 'TStyleBook') then
-        raise Exception.Create(Translate('Скопируйте компонент TStyleBook из дизайнера Delphi.'));
-    finally
-      Reader.Free;
-    end;
-    Binary.Position := 0;
-    // Design-time loading also accepts styles targeting another platform.
-    TComponentAccess(Book).SetDesigning(True, False);
-    Reader := TReader.Create(Binary, 4096);
-    try
-      Reader.ReadRootComponent(Book);
-    finally
-      Reader.Free;
-    end;
-    UnpackStyleBinaries(Book.Style);
-    if Book.CurrentItem.UnsupportedPlatform then
-      raise Exception.Create(Translate('Не удалось загрузить встроенные данные TStyleBook.'));
-    Result := Book.Style.Clone(nil);
-  finally
-    TComponentAccess(Book).SetDesigning(False, False);
-    Book.Free;
-    Binary.Free;
-    Source.Free;
-  end;
-end;
-
-function TRejectingStyleStream.Write(const Buffer; Count: Longint): Longint;
-begin
-  raise EWriteError.Create('Deliberate serialization failure for verification');
-end;
-
-procedure UnpackStyleBinaries(Root: TFmxObject);
-var
-  Container: IBinaryStyleContainer;
-begin
-  // FMX components are freed manually. Release the interface before the caller
-  // can free Root; an inline interface cast can survive until its routine exits.
-  if (Root is TStyleContainer) and Supports(Root, IBinaryStyleContainer, Container) then
-    Container.UnpackAllBinaries;
-end;
-
-function ChildrenOf(Obj: TFmxObject): TArray<TFmxObject>;
-begin
-  SetLength(Result, Obj.ChildrenCount);
-  for var I := 0 to Obj.ChildrenCount - 1 do
-    Result[I] := Obj.Children[I];
-end;
-
-procedure TEditorChildren.Collect(Child: TComponent);
-begin
-  if (Child is TFmxObject) then
-    Add(TFmxObject(Child));
-end;
-
-function EditableChildren(Obj: TFmxObject): TArray<TFmxObject>;
-var
-  Items: TEditorChildren;
-begin
-  // Use the same logical hierarchy as FMX streaming. IContent containers are
-  // transparent; constructor-created and style-generated objects are omitted.
-  Items := TEditorChildren.Create;
-  try
-    TFmxObjectAccess(Obj).GetChildren(Items.Collect, nil);
-    Result := Items.ToArray;
-  finally
-    Items.Free;
-  end;
-end;
-
-function EditableObject(Obj: TFmxObject): TFmxObject;
-begin
-  Result := Obj;
-  while (Result <> nil) and not Result.Stored do
-    Result := Result.Parent;
-end;
-
-function EditableParent(Obj: TFmxObject): TFmxObject;
-begin
-  Result := EditableObject(Obj.Parent);
-end;
-
-function TreeItems(Tree: TTreeView): TArray<TTreeViewItem>;
-var
-  Items: TList<TTreeViewItem>;
-
-  procedure Visit(Item: TTreeViewItem);
-  begin
-    Items.Add(Item);
-    for var I := 0 to Item.Count - 1 do
-      Visit(Item.Items[I]);
-  end;
-
-begin
-  Items := TList<TTreeViewItem>.Create;
-  try
-    for var I := 0 to Tree.Count - 1 do
-      Visit(Tree.Items[I]);
-    Result := Items.ToArray;
-  finally
-    Items.Free;
-  end;
-end;
-
-procedure SetModelDesigning(Obj: TFmxObject);
-begin
-  TComponentAccess(Obj).SetDesigning(True, False);
-  for var Child in ChildrenOf(Obj) do
-    SetModelDesigning(Child);
-end;
-
-procedure VisitStyleText(Root: TFmxObject; const Visit: TProc<TObject, TRttiProperty>);
-var
-  Context: TRttiContext;
-  Visited: TDictionary<TObject, Boolean>;
-
-  procedure Walk(Obj: TObject);
-  begin
-    if (Obj = nil) or Visited.ContainsKey(Obj) then
-      Exit;
-    Visited.Add(Obj, True);
-    for var Prop in Context.GetType(Obj.ClassType).GetProperties do
-    begin
-      if (Prop.Visibility <> mvPublished) or not Prop.IsReadable then
-        Continue;
-      if (Prop.Name = 'Text') and Prop.IsWritable and
-        (Prop.PropertyType.TypeKind in [tkString, tkLString, tkWString, tkUString]) then
-        Visit(Obj, Prop);
-      if Prop.PropertyType.TypeKind = tkClass then
-      begin
-        var Nested := Prop.GetValue(Obj).AsObject;
-        // Parent, scene, style books and other components belong to separate graphs.
-        if (Nested is TPersistent) and not (Nested is TComponent) then
-          Walk(Nested);
-      end;
-    end;
-    if Obj is TCollection then
-      for var I := 0 to TCollection(Obj).Count - 1 do
-        Walk(TCollection(Obj).Items[I]);
-    if Obj is TFmxObject then
-      for var I := 0 to TFmxObject(Obj).ChildrenCount - 1 do
-        Walk(TFmxObject(Obj).Children[I]);
-  end;
-
-begin
-  Context := TRttiContext.Create;
-  Visited := TDictionary<TObject, Boolean>.Create;
-  try
-    Walk(Root);
-  finally
-    Visited.Free;
-    Context.Free;
-  end;
-end;
-
-function AcceptStylePlatform(const PlatformTarget: string): Boolean;
-begin
-  Result := True;
-end;
 
 constructor TFormMain.Create(AOwner: TComponent);
 var
@@ -981,19 +394,13 @@ begin
   inherited;
   ConfigureLanguages(Language);
   TranslateForm(Self);
-  if FindCmdLineSwitch('self-test') or FindCmdLineSwitch('perf-test') then
-    FPreferencesFile := System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-preferences.ini')
-  else
+  if FPreferencesFile.IsEmpty then
     FPreferencesFile := System.IOUtils.TPath.Combine(
       System.IOUtils.TPath.Combine(GetEnvironmentVariable('LOCALAPPDATA'), 'StyleBookDesigner'), 'preferences.ini');
   LoadApplicationTheme;
   DocumentLabel.AutoTranslate := False;
+  FDocument := TStyleDocument.Create;
   FEntries := TObjectList<TPropertyEntry>.Create;
-  FValues := TObjectList<TNamedStyleValue>.Create;
-  FBindings := TObjectList<TStyleValueBinding>.Create;
-  FGroups := TObjectList<TStyleGroup>.Create;
-  FAssignments := TDictionary<string, string>.Create;
-  FStyleClasses := TDictionary<string, string>.Create;
   FTreeItems := TDictionary<Pointer, TTreeViewItem>.Create;
   // Keep a standard TTreeView in the FMX designer; use constrained selection
   // and batched-order handling in the running editor.
@@ -1090,14 +497,9 @@ begin
   if FDesignViewport <> nil then
     FDesignViewport.Visible := False;
   FTreeModelRoot := nil;
-  FRoot.Free;
+  FDocument.Free;
   FCheckerBitmap.Free;
   FEntries.Free;
-  FValues.Free;
-  FBindings.Free;
-  FGroups.Free;
-  FAssignments.Free;
-  FStyleClasses.Free;
   FTreeItems.Free;
   FClasses.Free;
   FNames.Free;
@@ -1775,7 +1177,7 @@ begin
         ShowStyleCatalog;
       acAssignStyleClass:
         begin
-          if (FSelected = nil) or (FSelected.Parent <> FRoot) then
+          if (FSelected = nil) or (FSelected.Parent <> FDocument.Root) then
             Exit;
           ShowPreview;
           TPreviewForm(FPreview).ClassSearch.SetFocus;
@@ -1790,7 +1192,7 @@ begin
         GroupAction(TComponent(Sender).Tag);
       acNewResource:
         begin
-          FSelected := FRoot;
+          FSelected := FDocument.Root;
           AddObject('TLayout');
         end;
     end;
@@ -1802,102 +1204,35 @@ end;
 
 function TFormMain.DesignerLayout(CreateIfMissing: Boolean): TLayout;
 begin
-  Result := nil;
-  if FRoot = nil then
-    Exit;
-  for var Child in ChildrenOf(FRoot) do
-    if SameText(Child.StyleName, '#designer') then
-    begin
-      if not (Child is TLayout) then
-        raise Exception.Create(Translate('Ресурс #designer должен быть TLayout.'));
-      if Result <> nil then
-        raise Exception.Create(Translate('Повтор служебного ресурса #designer.'));
-      Result := TLayout(Child);
-    end;
-  if (Result = nil) and CreateIfMissing then
-  begin
-    Result := TLayout.Create(nil);
-    Result.StyleName := '#designer';
-    Result.Visible := False;
-    Result.HitTest := False;
-    Result.Width := 0;
-    Result.Height := 0;
-    Result.Parent := FRoot;
-    SetModelDesigning(Result);
-  end;
+  Result := FDocument.DesignerLayout(CreateIfMissing);
 end;
 
 function TFormMain.DesignerJSON: string;
 begin
-  Result := '';
-  var Layout := DesignerLayout(False);
-  if Layout = nil then
-    Exit;
-  for var Child in ChildrenOf(Layout) do
-    if (Child is TStyleTag) and SameText(Child.StyleName, 'project') then
-    begin
-      Result := Child.TagString;
-      if Result.IsEmpty then
-        raise Exception.Create(Translate('Пустые данные проекта #designer.'));
-      Exit;
-    end;
-  raise Exception.Create(Translate('В #designer отсутствует TStyleTag project.'));
+  Result := FDocument.DesignerJSON;
 end;
 
 procedure TFormMain.UpdateDesignerMetadata(IncludeView: Boolean);
-var
-  Tag: TStyleTag;
 begin
-  var Layout := DesignerLayout(True);
-  // Always keep the hidden service resource last; resource indices remain stable.
-  Layout.Index := FRoot.ChildrenCount - 1;
-  for var Key in FAssignments.Keys.ToArray do
-  begin
-    var Obj := FindNamedObject(Key);
-    if (Obj = nil) or (Obj.Parent <> FRoot) or (FindGroup(FAssignments[Key]) = nil) then
-      FAssignments.Remove(Key);
-  end;
-  Tag := nil;
-  for var Child in ChildrenOf(Layout) do
-    if (Child is TStyleTag) and SameText(Child.StyleName, 'project') then
-      Tag := TStyleTag(Child);
-  if Tag = nil then
-  begin
-    Tag := TStyleTag.Create(nil);
-    Tag.StyleName := 'project';
-    Tag.Parent := Layout;
-    SetModelDesigning(Tag);
-  end;
-  for var Key in FStyleClasses.Keys.ToArray do
-  begin
-    var Resource := FindNamedObject(Key);
-    if (Resource = nil) or (Resource.Parent <> FRoot) or SameText(Resource.StyleName, '#designer') then
-      FStyleClasses.Remove(Key);
-  end;
-  Tag.TagString := MetadataJSON(IncludeView);
+  if IncludeView then
+    FDocument.UpdateDesignerMetadata(ProjectViewJSON)
+  else
+    FDocument.UpdateDesignerMetadata;
 end;
 
 function TFormMain.StyleResourceCount: Integer;
 begin
-  Result := 0;
-  for var Child in ChildrenOf(FRoot) do
-    if not SameText(Child.StyleName, '#designer') then
-      Inc(Result);
+  Result := FDocument.StyleResourceCount;
 end;
 
 function TFormMain.FindGroup(const ID: string): TStyleGroup;
 begin
-  Result := nil;
-  for var StyleGroup in FGroups do
-    if StyleGroup.ID = ID then
-      Exit(StyleGroup);
+  Result := FDocument.FindGroup(ID);
 end;
 
 function TFormMain.GroupOf(Resource: TFmxObject): string;
 begin
-  Result := '';
-  if Resource <> nil then
-    FAssignments.TryGetValue(Resource.Name, Result);
+  Result := FDocument.GroupOf(Resource);
 end;
 
 function TFormMain.CreateStyleGroup(const Title, ParentID: string): TStyleGroup;
@@ -1911,7 +1246,7 @@ begin
   Result.ID := TGUID.NewGuid.ToString;
   Result.Title := Trim(Title);
   Result.ParentID := ParentID;
-  FGroups.Add(Result);
+  FDocument.Groups.Add(Result);
   FSelected := nil;
   FSelectedGroup := Result;
   Changed;
@@ -1919,26 +1254,7 @@ end;
 
 function TFormMain.CanAssignGroup(Obj: TFmxObject; StyleGroup: TStyleGroup; const ParentID: string): Boolean;
 begin
-  Result := False;
-  if not ParentID.IsEmpty and (FindGroup(ParentID) = nil) then
-    Exit;
-  if StyleGroup <> nil then
-  begin
-    var ID := ParentID;
-    while not ID.IsEmpty do
-    begin
-      if ID = StyleGroup.ID then
-        Exit;
-      var Parent := FindGroup(ID);
-      if Parent = nil then
-        Exit;
-      ID := Parent.ParentID;
-    end;
-    Result := StyleGroup.ParentID <> ParentID;
-  end
-  else
-    Result := (Obj <> nil) and (Obj.Parent = FRoot) and
-      not SameText(Obj.StyleName, '#designer') and (GroupOf(Obj) <> ParentID);
+  Result := FDocument.CanAssignGroup(Obj, StyleGroup, ParentID);
 end;
 
 procedure TFormMain.AssignToGroup(Obj: TFmxObject; StyleGroup: TStyleGroup; const ParentID: string);
@@ -1949,14 +1265,14 @@ begin
   if StyleGroup <> nil then
     StyleGroup.ParentID := ParentID
   else if ParentID.IsEmpty then
-    FAssignments.Remove(Obj.Name)
+    FDocument.Assignments.Remove(Obj.Name)
   else
   begin
     if (Obj.Name = '') then
       Obj.Name := 'SBD_' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
-    FAssignments.AddOrSetValue(Obj.Name, ParentID);
+    FDocument.Assignments.AddOrSetValue(Obj.Name, ParentID);
   end;
-  FSelected := FRoot;
+  FSelected := FDocument.Root;
   FSelectedGroup := nil;
   Changed(False);
   FTreeRefreshPending := True;
@@ -1972,7 +1288,7 @@ begin
   // The menu groups resources and groups; promotion of nested objects is a drop operation.
   for var Model in SelectedTreeModels do
     if not (Model is TStyleGroup) and
-      (not (Model is TFmxObject) or (TFmxObject(Model).Parent <> FRoot)) then
+      (not (Model is TFmxObject) or (TFmxObject(Model).Parent <> FDocument.Root)) then
       Exit;
   DestItem := nil;
   if not ParentID.IsEmpty then
@@ -1985,7 +1301,7 @@ end;
 procedure TFormMain.BuildGroupedTree(const ParentID: string; Parent: TFmxObject);
 begin
   var Index := 0;
-  for var StyleGroup in FGroups do
+  for var StyleGroup in FDocument.Groups do
     if StyleGroup.ParentID = ParentID then
     begin
       var IsNew := not FTreeItems.ContainsKey(Pointer(StyleGroup));
@@ -2001,7 +1317,7 @@ begin
         Item.IsExpanded := True;
       BuildGroupedTree(StyleGroup.ID, Item);
     end;
-  for var Child in ChildrenOf(FRoot) do
+  for var Child in ChildrenOf(FDocument.Root) do
     if not SameText(Child.StyleName, '#designer') and (GroupOf(Child) = ParentID) then
     begin
       AddTree(Child, Parent, Index);
@@ -2062,16 +1378,16 @@ begin
     if not (SourceItem.TagObject is TFmxObject) then
       Exit;
     Obj := TFmxObject(SourceItem.TagObject);
-    if Obj.Parent = FRoot then
+    if Obj.Parent = FDocument.Root then
       Exit(CanAssignGroup(Obj, nil, ParentID) or
         (AllowUnchanged and not SameText(Obj.StyleName, '#designer') and (GroupOf(Obj) = ParentID)));
-    Exit((Obj <> FRoot) and ((Obj is TControl) or (Obj is TControl3D)));
+    Exit((Obj <> FDocument.Root) and ((Obj is TControl) or (Obj is TControl3D)));
   end;
   if not (SourceItem.TagObject is TFmxObject) or not (DestItem.TagObject is TFmxObject) then
     Exit;
   Obj := TFmxObject(SourceItem.TagObject);
   Target := TFmxObject(DestItem.TagObject);
-  if (Obj = FRoot) or SameText(Obj.StyleName, '#designer') or SameText(Target.StyleName, '#designer') then
+  if (Obj = FDocument.Root) or SameText(Obj.StyleName, '#designer') or SameText(Target.StyleName, '#designer') then
     Exit;
   if not ((Target is TControl) or (Target is TControl3D)) then
     Exit;
@@ -2112,7 +1428,7 @@ begin
   begin
     if DestItem <> nil then
       ParentID := TStyleGroup(DestItem.TagObject).ID;
-    Target := FRoot;
+    Target := FDocument.Root;
   end
   else
   begin
@@ -2131,7 +1447,7 @@ begin
     Obj := TFmxObject(Item.TagObject);
     if EditableParent(Obj) <> Target then
     begin
-      if Target = FRoot then
+      if Target = FDocument.Root then
       begin
         var Name := Obj.StyleName;
         if Name.IsEmpty then
@@ -2141,16 +1457,16 @@ begin
       Obj.Parent := Target;
       FDesignDirty := True;
     end;
-    FAssignments.Remove(Obj.Name);
-    if (Target = FRoot) and not ParentID.IsEmpty then
+    FDocument.Assignments.Remove(Obj.Name);
+    if (Target = FDocument.Root) and not ParentID.IsEmpty then
     begin
       if Obj.Name = '' then
         Obj.Name := 'SBD_' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
-      FAssignments.AddOrSetValue(Obj.Name, ParentID);
+      FDocument.Assignments.AddOrSetValue(Obj.Name, ParentID);
     end;
   end;
   // Reselecting a moved row would make FMX expand the destination group.
-  FSelected := FRoot;
+  FSelected := FDocument.Root;
   FSelectedGroup := nil;
   Changed(False);
   FTreeRefreshPending := True;
@@ -2188,7 +1504,7 @@ begin
     Combo.ItemHeight := Combo.Height;
     Combo.Items.Add(Translate('Без группы'));
     IDs.Add('');
-    for var StyleGroup in FGroups do
+    for var StyleGroup in FDocument.Groups do
       if CanAssignGroup(FSelected, FSelectedGroup, StyleGroup.ID) then
       begin
         Combo.Items.Add(GroupPath(StyleGroup));
@@ -2211,9 +1527,9 @@ end;
 function TFormMain.FindStyleRoot(const StyleName: string): TFmxObject;
 begin
   Result := nil;
-  if (FRoot = nil) or StyleName.IsEmpty or SameText(StyleName, '#designer') then
+  if (FDocument.Root = nil) or StyleName.IsEmpty or SameText(StyleName, '#designer') then
     Exit;
-  for var Resource in ChildrenOf(FRoot) do
+  for var Resource in ChildrenOf(FDocument.Root) do
     if SameText(Resource.StyleName, StyleName) then
       Exit(Resource);
 end;
@@ -2329,7 +1645,7 @@ begin
   UsedInButton.Clear;
   DependenciesButton.Clear;
   var Available := (FSelectedGroup = nil) and (FSelected <> nil) and
-    (FSelected <> FRoot) and (FSelected.Parent = FRoot) and
+    (FSelected <> FDocument.Root) and (FSelected.Parent = FDocument.Root) and
     not SameText(FSelected.StyleName, '#designer') and (Length(SelectedTreeModels) <= 1);
   UsedInButton.Enabled := Available and not FSelected.StyleName.IsEmpty;
   DependenciesButton.Enabled := Available;
@@ -2353,7 +1669,7 @@ begin
     Catalog.ControlsUsingStyle(FSelected.StyleName, Classes);
     CollectStyleDependencies(FSelected, Dependencies);
     if UsedInButton.Enabled then
-      for var Resource in ChildrenOf(FRoot) do
+      for var Resource in ChildrenOf(FDocument.Root) do
         if not SameText(Resource.StyleName, '#designer') then
         begin
           CollectStyleDependencies(Resource, Names, FSelected.StyleName, Classes);
@@ -2405,7 +1721,7 @@ begin
   UpdateStyleReferenceMenus;
   var Multiple := Length(SelectedTreeModels) > 1;
   var IsGroup := FSelectedGroup <> nil;
-  var IsResource := (FSelected <> nil) and (FSelected.Parent = FRoot);
+  var IsResource := (FSelected <> nil) and (FSelected.Parent = FDocument.Root);
   StyleClassButton.Enabled := IsResource and not IsGroup and not Multiple and
     not SameText(FSelected.StyleName, '#designer');
   AutoStyleClassButton.Enabled := StyleClassButton.Enabled and not AssignedStyleClass(FSelected).IsEmpty;
@@ -2416,9 +1732,9 @@ begin
   MoveToGroupButton.Enabled := IsGroup or IsResource;
   UngroupButton.Enabled := (IsGroup and not FSelectedGroup.ParentID.IsEmpty) or
     (IsResource and not GroupOf(FSelected).IsEmpty);
-  DuplicateButton.Enabled := (FSelected <> nil) and (FSelected <> FRoot);
+  DuplicateButton.Enabled := (FSelected <> nil) and (FSelected <> FDocument.Root);
   CopyObjectButton.Enabled := DuplicateButton.Enabled;
-  PasteObjectButton.Enabled := (FSelected = nil) or (FSelected = FRoot) or
+  PasteObjectButton.Enabled := (FSelected = nil) or (FSelected = FDocument.Root) or
     (FSelected is TControl) or (FSelected is TControl3D);
   SortStylesButton.Enabled := StyleResourceCount > 1;
   FrontButton.Enabled := DuplicateButton.Enabled;
@@ -2433,7 +1749,7 @@ begin
     for var Model in SelectedTreeModels do
       if Model is TStyleGroup then
         UngroupButton.Enabled := UngroupButton.Enabled or not TStyleGroup(Model).ParentID.IsEmpty
-      else if (Model is TFmxObject) and (TFmxObject(Model).Parent = FRoot) then
+      else if (Model is TFmxObject) and (TFmxObject(Model).Parent = FDocument.Root) then
         UngroupButton.Enabled := UngroupButton.Enabled or not GroupOf(TFmxObject(Model)).IsEmpty
       else
         MoveToGroupButton.Enabled := False;
@@ -2477,7 +1793,7 @@ begin
         else if FSelected <> nil then
         begin
           var Resource := FSelected;
-          while (Resource.Parent <> nil) and (Resource.Parent <> FRoot) do
+          while (Resource.Parent <> nil) and (Resource.Parent <> FDocument.Root) do
             Resource := Resource.Parent;
           ID := GroupOf(Resource);
         end;
@@ -2500,7 +1816,7 @@ begin
         end;
       end;
     acMoveToGroup:
-      if (FSelectedGroup <> nil) or ((FSelected <> nil) and (FSelected.Parent = FRoot)) then
+      if (FSelectedGroup <> nil) or ((FSelected <> nil) and (FSelected.Parent = FDocument.Root)) then
         if ChooseGroup(ID) then
           AssignSelectionToGroup(ID);
     acUngroup:
@@ -2518,36 +1834,36 @@ begin
         Remember;
         ID := FSelectedGroup.ID;
         var ParentID := FSelectedGroup.ParentID;
-        for var StyleGroup in FGroups do
+        for var StyleGroup in FDocument.Groups do
           if StyleGroup.ParentID = ID then
             StyleGroup.ParentID := ParentID;
-        for var Key in FAssignments.Keys.ToArray do
-          if FAssignments[Key] = ID then
+        for var Key in FDocument.Assignments.Keys.ToArray do
+          if FDocument.Assignments[Key] = ID then
             if ParentID.IsEmpty then
-              FAssignments.Remove(Key)
+              FDocument.Assignments.Remove(Key)
             else
-              FAssignments.AddOrSetValue(Key, ParentID);
+              FDocument.Assignments.AddOrSetValue(Key, ParentID);
         var StyleGroup := FSelectedGroup;
         FSelectedGroup := nil;
-        FSelected := FRoot;
-        FGroups.Remove(StyleGroup);
+        FSelected := FDocument.Root;
+        FDocument.Groups.Remove(StyleGroup);
         Changed;
       end;
     acUp, acDown:
       if FSelectedGroup <> nil then
       begin
-        Index := FGroups.IndexOf(FSelectedGroup);
+        Index := FDocument.Groups.IndexOf(FSelectedGroup);
         Other := Index;
         repeat
           if Action = acUp then
             Dec(Other)
           else
             Inc(Other);
-        until (Other < 0) or (Other >= FGroups.Count) or (FGroups[Other].ParentID = FSelectedGroup.ParentID);
-        if (Other >= 0) and (Other < FGroups.Count) then
+        until (Other < 0) or (Other >= FDocument.Groups.Count) or (FDocument.Groups[Other].ParentID = FSelectedGroup.ParentID);
+        if (Other >= 0) and (Other < FDocument.Groups.Count) then
         begin
           Remember;
-          FGroups.Exchange(Index, Other);
+          FDocument.Groups.Exchange(Index, Other);
           Changed;
         end;
       end;
@@ -2558,11 +1874,11 @@ procedure TFormMain.ApplyProjectView;
 var
   JSON: TJSONObject;
 begin
-  if FPendingProjectView.IsEmpty then
+  if FDocument.PendingView.IsEmpty then
     Exit;
   FTreeViewportRestorePending := False;
-  JSON := TJSONObject.ParseJSONValue(FPendingProjectView) as TJSONObject;
-  FPendingProjectView := '';
+  JSON := TJSONObject.ParseJSONValue(FDocument.PendingView) as TJSONObject;
+  FDocument.PendingView := '';
   try
     TreePanel.Width := EnsureRange(JSON.GetValue<Double>('treeWidth', TreePanel.Width), 180, 600);
     InspectorPanel.Width := EnsureRange(JSON.GetValue<Double>('inspectorWidth', InspectorPanel.Width), 280, 650);
@@ -2683,7 +1999,7 @@ begin
           (AObject.Parent.Children[I].StyleName = AObject.StyleName) then
           Inc(Occurrence);
     Item.TagString := Item.TagString + ':' + Occurrence.ToString;
-    if (AObject.Parent <> FRoot) and (AParent is TTreeViewItem) then
+    if (AObject.Parent <> FDocument.Root) and (AParent is TTreeViewItem) then
       Item.TagString := AParent.TagString + '/' + Item.TagString;
   end;
   var Children := EditableChildren(AObject);
@@ -2758,7 +2074,7 @@ begin
   FTreeViewportRestorePending := False;
   Viewport := FTree.ViewportPosition;
   FTreeStableBounds := FTree.ContentBounds;
-  SameModel := FTreeModelRoot = FRoot;
+  SameModel := FTreeModelRoot = FDocument.Root;
   ExpandedObjects := TDictionary<Pointer, Boolean>.Create;
   ExpandedKeys := TDictionary<string, Boolean>.Create;
   Desired := TDictionary<Pointer, Boolean>.Create;
@@ -2782,9 +2098,9 @@ begin
       end
       else
       begin
-        for var StyleGroup in FGroups do
+        for var StyleGroup in FDocument.Groups do
           Desired.AddOrSetValue(Pointer(StyleGroup), True);
-        for var Child in ChildrenOf(FRoot) do
+        for var Child in ChildrenOf(FDocument.Root) do
           if not SameText(Child.StyleName, '#designer') then
             Gather(Child);
         var OldItems := TreeItems(FTree);
@@ -2802,8 +2118,8 @@ begin
             OldItems[I].Free;
           end;
       end;
-      FTreeModelRoot := FRoot;
-      if (FRoot <> nil) and not SameModel then
+      FTreeModelRoot := FDocument.Root;
+      if (FDocument.Root <> nil) and not SameModel then
         BuildGroupedTree('', FTree);
       Stage('delete');
       VisitItems(FTree, True);
@@ -2903,7 +2219,7 @@ begin
     Exit;
   if FTree.Selected = nil then
   begin
-    FSelected := FRoot;
+    FSelected := FDocument.Root;
     FSelectedGroup := nil;
   end
   else if FTree.Selected.TagObject is TStyleGroup then
@@ -2923,191 +2239,21 @@ begin
 end;
 
 procedure TFormMain.AddProperties(AInstance: TObject; const APrefix: string; ADepth: Integer; AFilter: Boolean);
-var
-  Context: TRttiContext;
-  Prop: TRttiProperty;
-  Entry: TPropertyEntry;
-  Value: TValue;
-  Obj: TObject;
-  Path: string;
-  Collection: TCollection;
-  I: Integer;
 begin
-  if (AInstance = nil) or (ADepth > 5) then
-    Exit;
-  Context := TRttiContext.Create;
-  try
-    for Prop in Context.GetType(AInstance.ClassType).GetProperties do
-    begin
-      if not IsStyleProperty(AInstance, Prop) then
-        Continue;
-      if (Prop.Name = 'Parent') or (Prop.Name = 'StyleBook') or
-        Prop.Name.StartsWith('On') then
-        Continue;
-      Path := APrefix + Prop.Name;
-      var DuplicatePath := False;
-      for var Existing in FEntries do
-        if Existing.Path = Path then
-        begin
-          DuplicatePath := True;
-          Break;
-        end;
-      if DuplicatePath then
-        Continue;
-      try
-        Value := Prop.GetValue(AInstance);
-        if Value.Kind = tkClass then
-        begin
-          Obj := Value.AsObject;
-          if Obj is TCollection then
-          begin
-            Entry := TPropertyEntry.Create;
-            Entry.Instance := AInstance;
-            Entry.Prop := Prop;
-            Entry.Path := Path;
-            FEntries.Add(Entry);
-            Collection := TCollection(Obj);
-            for I := 0 to Collection.Count - 1 do
-              AddProperties(Collection.Items[I], Path + '[' + I.ToString + '].', ADepth + 1, AFilter);
-          end
-          else if (Obj is TStrings) or (Obj is TBitmap) then
-          begin
-            Entry := TPropertyEntry.Create;
-            Entry.Instance := AInstance;
-            Entry.Prop := Prop;
-            Entry.Path := Path;
-            FEntries.Add(Entry);
-          end
-          else if (Obj is TPersistent) and not (Obj is TComponent) then
-            AddProperties(Obj, Path + '.', ADepth + 1, AFilter);
-          Continue;
-        end;
-        if not Prop.IsWritable then
-          Continue;
-        if not (Value.Kind in [tkInteger, tkInt64, tkFloat, tkEnumeration,
-            tkSet, tkString, tkLString, tkWString, tkUString, tkChar, tkWChar]) then
-          Continue;
-        if AFilter and not FPropertySearch.Text.IsEmpty and not Path.ToLower.Contains(FPropertySearch.Text.ToLower) then
-          Continue;
-        Entry := TPropertyEntry.Create;
-        Entry.Instance := AInstance;
-        Entry.Prop := Prop;
-        Entry.Path := Path;
-        FEntries.Add(Entry);
-      except
-        // A component may expose a property which requires a platform service.
-        // Do not prevent editing the other properties in that case.
-      end;
-    end;
-  finally
-    Context.Free;
-  end;
+  if AFilter then
+    CollectStyleProperties(FEntries, AInstance, APrefix, ADepth, FPropertySearch.Text)
+  else
+    CollectStyleProperties(FEntries, AInstance, APrefix, ADepth);
 end;
 
 function TFormMain.PropertyText(AEntry: TPropertyEntry): string;
-var
-  V: TValue;
-  Obj: TObject;
 begin
-  V := AEntry.Prop.GetValue(AEntry.Instance);
-  if V.Kind = tkClass then
-  begin
-    Obj := V.AsObject;
-    if Obj is TCollection then
-      Exit(Format(Translate('%d элементов (двойной щелчок)'), [TCollection(Obj).Count]));
-    if Obj is TStrings then
-      Exit(Translate('Текст (двойной щелчок)'));
-    if Obj is TBitmap then
-      Exit(Translate('Изображение (двойной щелчок)'));
-  end;
-  if AEntry.Prop.PropertyType.Name = 'TAlphaColor' then
-    Exit('#' + IntToHex(V.AsOrdinal, 8));
-  case V.Kind of
-    tkEnumeration:
-      Result := GetEnumName(AEntry.Prop.PropertyType.Handle, V.AsOrdinal);
-    tkSet:
-      Result := SetToString(AEntry.Prop.PropertyType.Handle, V.GetReferenceToRawData, True);
-    tkFloat:
-      Result := FloatToStr(V.AsExtended, TFormatSettings.Invariant);
-  else
-    Result := V.ToString;
-  end;
+  Result := StylePropertyText(AEntry);
 end;
 
 procedure TFormMain.SetPropertyText(AEntry: TPropertyEntry; const AText: string);
-var
-  V: TValue;
-  S: string;
-  N: Int64;
-  D: Extended;
-  Info: PTypeInfo;
-  Data: PTypeData;
-  SetBytes: TBytes;
 begin
-  if not AEntry.Prop.IsWritable then
-    raise Exception.Create(Translate('Это свойство доступно только для чтения.'));
-  Info := AEntry.Prop.PropertyType.Handle;
-  S := Trim(AText);
-  V := AEntry.Prop.GetValue(AEntry.Instance);
-  case V.Kind of
-    tkInteger, tkInt64:
-      begin
-        if S.StartsWith('#') then
-          S := '$' + S.Substring(1);
-        if not TryStrToInt64(S, N) then
-          raise EConvertError.Create(Translate('Ожидается целое число или #AARRGGBB.'));
-        Data := GetTypeData(Info);
-        if (V.Kind = tkInteger) and (Data.OrdType <> otULong) and
-          ((N < Data.MinValue) or (N > Data.MaxValue)) then
-          raise EConvertError.Create(Translate('Число выходит за диапазон свойства.'));
-        if (V.Kind = tkInteger) and (Data.OrdType = otULong) and
-          ((N < 0) or (N > Int64(High(Cardinal)))) then
-          raise EConvertError.Create(Translate('Число выходит за диапазон свойства.'));
-        V := TValue.FromOrdinal(Info, N);
-      end;
-    tkFloat:
-      begin
-        if not TryStrToFloat(S.Replace(',', '.'), D, TFormatSettings.Invariant) or
-          IsNan(D) or IsInfinite(D) then
-          raise EConvertError.Create(Translate('Ожидается конечное число.'));
-        V := TValue.From<Extended>(D).Cast(Info);
-      end;
-    tkEnumeration:
-      begin
-        N := GetEnumValue(Info, S);
-        if N < 0 then
-          raise EConvertError.Create(Translate('Допустимые значения: ') + GetEnumName(Info, GetTypeData(Info).MinValue) + ' … ' + GetEnumName(Info, GetTypeData(Info).MaxValue));
-        V := TValue.FromOrdinal(Info, N);
-      end;
-    tkSet:
-      begin
-        SetLength(SetBytes, SizeOfSet(Info));
-        StringToSet(Info, S, @SetBytes[0]);
-        TValue.Make(@SetBytes[0], Info, V);
-      end;
-    tkString, tkLString, tkWString, tkUString:
-      V := TValue.From<string>(AText).Cast(Info);
-    tkChar, tkWChar:
-      begin
-        if Length(AText) <> 1 then
-          raise EConvertError.Create(Translate('Ожидается один символ.'));
-        V := TValue.FromOrdinal(Info, Ord(AText[1]));
-      end;
-  else
-    raise Exception.Create(Translate('Используйте двойной щелчок для специального редактора.'));
-  end;
-  if (AEntry.Instance = FSelected) and (AEntry.Prop.Name = 'StyleName') and
-    (FSelected.Parent = FRoot) then
-  begin
-    if Trim(AText).IsEmpty then
-      raise Exception.Create(Translate('Корневому ресурсу нужно имя StyleName.'));
-    for var Child in ChildrenOf(FRoot) do
-      if (Child <> FSelected) and SameText(Child.StyleName, AText) then
-        raise Exception.Create(Translate('Ресурс с таким StyleName уже существует.'));
-  end;
-  if (AEntry.Prop.Name = 'StyleName') and SameText(AText, '#designer') then
-    raise Exception.Create(Translate('Имя #designer зарезервировано редактором.'));
-  AEntry.Prop.SetValue(AEntry.Instance, V);
+  SetStylePropertyText(FDocument.Root, FSelected, AEntry, AText);
 end;
 
 procedure TFormMain.BuildProperties;
@@ -3117,7 +2263,7 @@ begin
   FBuilding := True;
   try
     FEntries.Clear;
-    if FSelected <> FRoot then
+    if FSelected <> FDocument.Root then
     begin
       AddProperties(FSelected, '', 0);
       if FProperties.InspectedObject = FSelected then
@@ -3143,7 +2289,7 @@ procedure TFormMain.InspectorBinding(Sender: TObject; const Path: string; var Re
 begin
   if FSelected = nil then
     Exit;
-  for var Binding in FBindings do
+  for var Binding in FDocument.ValueBindings do
     if (Binding.TargetName = FSelected.Name) and (Binding.PropertyPath = Path) then
     begin
       ResourceName := Binding.ResourceName;
@@ -3338,7 +2484,7 @@ begin
   KindPath := Path.Substring(0, Path.LastIndexOf('.') + 1) + 'Kind';
   BoundValues := TDictionary<string, string>.Create;
   try
-    for var Binding in FBindings do
+    for var Binding in FDocument.ValueBindings do
       if (Binding.TargetName = FSelected.Name) and
         (Binding.PropertyPath.StartsWith(Path + '.') or
         ((Brush <> nil) and (Binding.PropertyPath = KindPath))) then
@@ -3427,7 +2573,7 @@ begin
     var Before := Snapshot;
     var BoundValues := TDictionary<string, string>.Create;
     try
-      for var Binding in FBindings do
+      for var Binding in FDocument.ValueBindings do
         if (Binding.TargetName = FSelected.Name) and Binding.PropertyPath.StartsWith(Path + '.') then
         begin
           var Entry := ResolveProperty(FSelected, Binding.PropertyPath);
@@ -3500,39 +2646,12 @@ end;
 
 procedure TFormMain.ApplyTextPlaceholders(Obj: TFmxObject);
 begin
-  VisitStyleText(Obj,
-    procedure(Instance: TObject; Prop: TRttiProperty)
-    begin
-      if Prop.GetValue(Instance).AsString.IsEmpty then
-        Prop.SetValue(Instance, TValue.From<string>('Text').Cast(Prop.PropertyType.Handle));
-    end);
+  SBD.StyleIO.ApplyTextPlaceholders(Obj);
 end;
 
 procedure TFormMain.WriteStyleStream(Stream: TStream; Format: TStyleFormat);
-var
-  Placeholders: TList<TPair<TObject, TRttiProperty>>;
 begin
-  Placeholders := TList<TPair<TObject, TRttiProperty>>.Create;
-  try
-    try
-      VisitStyleText(FRoot,
-        procedure(Instance: TObject; Prop: TRttiProperty)
-        begin
-          if Prop.GetValue(Instance).AsString = 'Text' then
-          begin
-            Placeholders.Add(TPair<TObject, TRttiProperty>.Create(Instance, Prop));
-            Prop.SetValue(Instance, TValue.From<string>('').Cast(Prop.PropertyType.Handle));
-          end;
-        end);
-      TStyleStreaming.SaveToStream(FRoot, Stream, Format);
-    finally
-      // Keep authored editor values and history intact, also after a failed write.
-      for var Pair in Placeholders do
-        Pair.Value.SetValue(Pair.Key, TValue.From<string>('Text').Cast(Pair.Value.PropertyType.Handle));
-    end;
-  finally
-    Placeholders.Free;
-  end;
+  SBD.StyleIO.WriteStyleStream(FDocument.Root, Stream, Format);
 end;
 
 procedure TFormMain.PrepareDesignGlyph(Glyph: TGlyph);
@@ -3622,7 +2741,7 @@ begin
   PreviousResource := FResource;
   R := FSelected;
   if R <> nil then
-    while (R.Parent <> nil) and (R.Parent <> FRoot) do
+    while (R.Parent <> nil) and (R.Parent <> FDocument.Root) do
       R := R.Parent;
   if not Force and not FDesignDirty and (FDesignRoot <> nil) and (R = FResource) then
   begin
@@ -3638,7 +2757,7 @@ begin
   FDesignViewport.Visible := False;
   UpdateOutline;
   FResource := nil;
-  if (FSelected = nil) or (FSelected = FRoot) then
+  if (FSelected = nil) or (FSelected = FDocument.Root) then
   begin
     if FSelectedGroup <> nil then
       FSelectionLabel.Text := Translate('Группа: ') + FSelectedGroup.Title
@@ -3649,7 +2768,7 @@ begin
     Exit;
   end;
   R := FSelected;
-  while (R.Parent <> nil) and (R.Parent <> FRoot) do
+  while (R.Parent <> nil) and (R.Parent <> FDocument.Root) do
     R := R.Parent;
   FResource := R;
   if R <> PreviousResource then
@@ -4111,9 +3230,9 @@ begin
   WasBuilding := FBuilding;
   FBuilding := True;
   try
-    ResourceThemeBox.ItemIndex := Ord(FResourceTheme);
+    ResourceThemeBox.ItemIndex := Ord(FDocument.ResourceTheme);
     if FBackgroundMode.ItemIndex <> 2 then
-      FBackgroundMode.ItemIndex := Ord(FResourceTheme);
+      FBackgroundMode.ItemIndex := Ord(FDocument.ResourceTheme);
   finally
     FBuilding := WasBuilding;
   end;
@@ -4124,11 +3243,11 @@ procedure TFormMain.SetResourceTheme(Value: TResourceTheme);
 var
   State: TBytes;
 begin
-  if Value = FResourceTheme then
+  if Value = FDocument.ResourceTheme then
     Exit;
-  for var Resource in FValues do
+  for var Resource in FDocument.NamedValues do
     ValidateNamedValue(Resource);
-  for var Binding in FBindings do
+  for var Binding in FDocument.ValueBindings do
   begin
     var Resource := FindValue(Binding.ResourceName);
     if Resource <> nil then
@@ -4136,7 +3255,7 @@ begin
   end;
   State := Snapshot;
   try
-    FResourceTheme := Value;
+    FDocument.ResourceTheme := Value;
     ApplyBindings;
   except
     Restore(State);
@@ -4401,539 +3520,124 @@ begin
 end;
 
 function TFormMain.IsStyleProperty(Instance: TObject; Prop: TRttiProperty): Boolean;
-const
-  Hidden: array[0..13] of string = ('Name', 'Stored', 'Tag', 'TagFloat', 'TagString',
-    'Locked', 'Parent', 'Owner', 'Root', 'Scene', 'StyleBook', 'DesignInfo', 'Action', 'Observers');
 begin
-  Result := (Prop.Visibility = mvPublished) and Prop.IsReadable and not Prop.Name.StartsWith('On');
-  if not Result then
-    Exit;
-  if (Prop.Name = 'Tag') or (Prop.Name = 'TagString') or (Prop.Name = 'TagFloat') then
-    if (Instance is TStyleTag) or ((Instance is TFmxObject) and not
-      ((Instance is TControl) or (Instance is TControl3D) or (Instance is TAnimation) or (Instance is TEffect))) then
-      Exit(True);
-  if Instance is TComponent then
-    for var Name in Hidden do
-      if SameText(Prop.Name, Name) then
-        Exit(False);
+  Result := SBD.StyleProperties.IsStyleProperty(Instance, Prop);
+end;
+
+function TFormMain.ProjectViewJSON: string;
+var
+  View: TJSONObject;
+  Expanded: TJSONArray;
+begin
+  View := TJSONObject.Create;
+  try
+    View.AddPair('zoom', TJSONNumber.Create(FZoomPercent));
+    View.AddPair('panX', TJSONNumber.Create(FPanOffset.X));
+    View.AddPair('panY', TJSONNumber.Create(FPanOffset.Y));
+    View.AddPair('background', TJSONNumber.Create(FBackgroundMode.ItemIndex));
+    View.AddPair('showFrame', TJSONBool.Create(ShowFrame.IsChecked));
+    View.AddPair('showGuides', TJSONBool.Create(ShowGuides.IsChecked));
+    View.AddPair('showDimensions', TJSONBool.Create(ShowDimensions.IsChecked));
+    View.AddPair('treeWidth', TJSONNumber.Create(TreePanel.Width));
+    View.AddPair('inspectorWidth', TJSONNumber.Create(InspectorPanel.Width));
+    View.AddPair('tab', TJSONNumber.Create(ToolsTabs.TabIndex));
+    View.AddPair('treeX', TJSONNumber.Create(FTree.ViewportPosition.X));
+    View.AddPair('treeY', TJSONNumber.Create(FTree.ViewportPosition.Y));
+    View.AddPair('propertyFilter', FPropertySearch.Text);
+    View.AddPair('paletteFilter', FSearch.Text);
+    View.AddPair('paletteCategory', TJSONNumber.Create(FCategory.ItemIndex));
+    View.AddPair('columnRatio', TJSONNumber.Create(FProperties.NameColumnRatio));
+    View.AddPair('propertyY', TJSONNumber.Create(FProperties.Tree.ViewportPosition.Y));
+    if FValueReference.ItemIndex >= 0 then
+      View.AddPair('selectedValue', FValueReference.Items[FValueReference.ItemIndex]);
+    var PropertyExpanded := TJSONArray.Create;
+    View.AddPair('propertyExpanded', PropertyExpanded);
+    for var Node in TreeItems(FProperties.Tree) do
+      if Node.IsExpanded then
+        PropertyExpanded.Add(TInspectorProperty(Node.TagObject).Path);
+    if FProperties.SelectedProperty <> nil then
+      View.AddPair('property', FProperties.SelectedProperty.Path);
+    if FTree.Selected <> nil then
+      View.AddPair('selected', FTree.Selected.TagString);
+    Expanded := TJSONArray.Create;
+    View.AddPair('expanded', Expanded);
+    for var Node in TreeItems(FTree) do
+      if Node.IsExpanded then
+        Expanded.Add(Node.TagString);
+    Result := View.ToJSON;
+  finally
+    View.Free;
+  end;
 end;
 
 function TFormMain.MetadataJSON(IncludeView: Boolean): string;
-var
-  Root, Item: TJSONObject;
-  Values, Bindings, Targets, Groups, Assignments, StyleClasses, Expanded: TJSONArray;
-  Names: TDictionary<string, Boolean>;
-  Obj, Parent: TFmxObject;
-  Path: string;
-  View: TJSONObject;
 begin
-  Root := TJSONObject.Create;
-  Names := TDictionary<string, Boolean>.Create;
-  try
-    Root.AddPair('version', TJSONNumber.Create(3));
-    if FResourceTheme = rtDark then
-      Root.AddPair('theme', 'dark')
-    else
-      Root.AddPair('theme', 'light');
-    Values := TJSONArray.Create;
-    Root.AddPair('values', Values);
-    for var Value in FValues do
-    begin
-      Item := TJSONObject.Create;
-      Item.AddPair('name', Value.Name);
-      Item.AddPair('kind', Value.Kind);
-      Item.AddPair('light', Value.LightValue);
-      Item.AddPair('dark', Value.DarkValue);
-      Values.AddElement(Item);
-    end;
-    Bindings := TJSONArray.Create;
-    Root.AddPair('bindings', Bindings);
-    for var Binding in FBindings do
-    begin
-      Item := TJSONObject.Create;
-      Item.AddPair('target', Binding.TargetName);
-      Item.AddPair('property', Binding.PropertyPath);
-      Item.AddPair('resource', Binding.ResourceName);
-      Bindings.AddElement(Item);
-    end;
-    // The stock style reader can discard component names. Persist the location
-    // of bound targets so names and bindings can be restored together.
-    Targets := TJSONArray.Create;
-    Root.AddPair('targets', Targets);
-    for var Binding in FBindings do
-      Names.AddOrSetValue(Binding.TargetName, True);
-    for var Assignment in FAssignments do
-      Names.AddOrSetValue(Assignment.Key, True);
-    for var Assignment in FStyleClasses do
-      Names.AddOrSetValue(Assignment.Key, True);
-    var TargetNames := Names.Keys.ToArray;
-    TArray.Sort<string>(TargetNames);
-    for var Name in TargetNames do
-    begin
-      Obj := FindNamedObject(Name);
-      if Obj = nil then
-        Continue;
-      Path := '';
-      Parent := Obj;
-      while (Parent <> nil) and (Parent <> FRoot) do
-      begin
-        if Path.IsEmpty then
-          Path := Parent.Index.ToString
-        else
-          Path := Parent.Index.ToString + '/' + Path;
-        Parent := Parent.Parent;
-      end;
-      if Parent <> FRoot then
-        Continue;
-      Item := TJSONObject.Create;
-      Item.AddPair('name', Obj.Name);
-      Item.AddPair('path', Path);
-      Item.AddPair('class', Obj.ClassName);
-      Targets.AddElement(Item);
-    end;
-    Groups := TJSONArray.Create;
-    Root.AddPair('groups', Groups);
-    for var StyleGroup in FGroups do
-    begin
-      Item := TJSONObject.Create;
-      Item.AddPair('id', StyleGroup.ID);
-      Item.AddPair('title', StyleGroup.Title);
-      Item.AddPair('parent', StyleGroup.ParentID);
-      Groups.AddElement(Item);
-    end;
-    Assignments := TJSONArray.Create;
-    Root.AddPair('assignments', Assignments);
-    var GroupTargets := FAssignments.Keys.ToArray;
-    TArray.Sort<string>(GroupTargets);
-    for var TargetName in GroupTargets do
-    begin
-      Item := TJSONObject.Create;
-      Item.AddPair('target', TargetName);
-      Item.AddPair('group', FAssignments[TargetName]);
-      Assignments.AddElement(Item);
-    end;
-    StyleClasses := TJSONArray.Create;
-    Root.AddPair('styleClasses', StyleClasses);
-    var ClassTargets := FStyleClasses.Keys.ToArray;
-    TArray.Sort<string>(ClassTargets);
-    for var TargetName in ClassTargets do
-    begin
-      Obj := FindNamedObject(TargetName);
-      if (Obj = nil) or (Obj.Parent <> FRoot) or SameText(Obj.StyleName, '#designer') then
-        Continue;
-      Item := TJSONObject.Create;
-      Item.AddPair('target', TargetName);
-      Item.AddPair('controlClass', FStyleClasses[TargetName]);
-      StyleClasses.AddElement(Item);
-    end;
-    if IncludeView then
-    begin
-      View := TJSONObject.Create;
-      Root.AddPair('view', View);
-      View.AddPair('zoom', TJSONNumber.Create(FZoomPercent));
-      View.AddPair('panX', TJSONNumber.Create(FPanOffset.X));
-      View.AddPair('panY', TJSONNumber.Create(FPanOffset.Y));
-      View.AddPair('background', TJSONNumber.Create(FBackgroundMode.ItemIndex));
-      View.AddPair('showFrame', TJSONBool.Create(ShowFrame.IsChecked));
-      View.AddPair('showGuides', TJSONBool.Create(ShowGuides.IsChecked));
-      View.AddPair('showDimensions', TJSONBool.Create(ShowDimensions.IsChecked));
-      View.AddPair('treeWidth', TJSONNumber.Create(TreePanel.Width));
-      View.AddPair('inspectorWidth', TJSONNumber.Create(InspectorPanel.Width));
-      View.AddPair('tab', TJSONNumber.Create(ToolsTabs.TabIndex));
-      View.AddPair('treeX', TJSONNumber.Create(FTree.ViewportPosition.X));
-      View.AddPair('treeY', TJSONNumber.Create(FTree.ViewportPosition.Y));
-      View.AddPair('propertyFilter', FPropertySearch.Text);
-      View.AddPair('paletteFilter', FSearch.Text);
-      View.AddPair('paletteCategory', TJSONNumber.Create(FCategory.ItemIndex));
-      View.AddPair('columnRatio', TJSONNumber.Create(FProperties.NameColumnRatio));
-      View.AddPair('propertyY', TJSONNumber.Create(FProperties.Tree.ViewportPosition.Y));
-      if FValueReference.ItemIndex >= 0 then
-        View.AddPair('selectedValue', FValueReference.Items[FValueReference.ItemIndex]);
-      var PropertyExpanded := TJSONArray.Create;
-      View.AddPair('propertyExpanded', PropertyExpanded);
-      for var Node in TreeItems(FProperties.Tree) do
-        if Node.IsExpanded then
-          PropertyExpanded.Add(TInspectorProperty(Node.TagObject).Path);
-      if FProperties.SelectedProperty <> nil then
-        View.AddPair('property', FProperties.SelectedProperty.Path);
-      if FTree.Selected <> nil then
-        View.AddPair('selected', FTree.Selected.TagString);
-      Expanded := TJSONArray.Create;
-      View.AddPair('expanded', Expanded);
-      for var Node in TreeItems(FTree) do
-        if Node.IsExpanded then
-          Expanded.Add(Node.TagString);
-    end;
-    Result := Root.ToJSON;
-  finally
-    Names.Free;
-    Root.Free;
-  end;
+  if IncludeView then
+    Result := FDocument.MetadataJSON(ProjectViewJSON)
+  else
+    Result := FDocument.MetadataJSON;
 end;
 
 procedure TFormMain.LoadMetadata(const Text: string);
-var
-  JSON: TJSONValue;
-  Items: TJSONArray;
-  Value: TNamedStyleValue;
-  Binding: TStyleValueBinding;
-  Obj: TFmxObject;
-  Index, Version: Integer;
-  Path, Name: string;
 begin
   FSelectedGroup := nil;
-  FGroups.Clear;
-  FAssignments.Clear;
-  FStyleClasses.Clear;
   FPreviewSource := nil;
-  FPendingProjectView := '';
-  FResourceTheme := rtLight;
-  if Text.IsEmpty then
-  begin
-    FValues.Clear;
-    FBindings.Clear;
-    SyncResourceThemeView;
-    UpdateValueReferences;
-    Exit;
-  end;
-  JSON := TJSONObject.ParseJSONValue(Text);
-  try
-    if not (JSON is TJSONObject) then
-      raise Exception.Create(Translate('Некорректный файл коллекции ресурсов.'));
-    Version := JSON.GetValue<Integer>('version', 0);
-    if not (Version in [1, 2, 3]) then
-      raise Exception.Create(Translate('Неподдерживаемая версия коллекции ресурсов.'));
-    if Version = 3 then
-    begin
-      var Theme := JSON.GetValue<string>('theme', 'light');
-      if Theme = 'dark' then
-        FResourceTheme := rtDark
-      else if Theme <> 'light' then
-        raise Exception.Create(Translate('Некорректный режим ресурсов.'));
-    end;
-    Items := JSON.GetValue<TJSONArray>('targets', nil);
-    if Items <> nil then
-      for var Item in Items do
-      begin
-        Name := Item.GetValue<string>('name');
-        Obj := FindNamedObject(Name);
-        if Obj <> nil then
-          Continue;
-        Obj := FRoot;
-        Path := Item.GetValue<string>('path');
-        if not Path.IsEmpty then
-          for var Part in Path.Split(['/']) do
-          begin
-            if not TryStrToInt(Part, Index) or (Index < 0) or (Index >= Obj.ChildrenCount) then
-              raise Exception.Create(Translate('Не найден объект связи: ') + Name);
-            Obj := Obj.Children[Index];
-          end;
-        if Obj.ClassName <> Item.GetValue<string>('class') then
-          raise Exception.Create(Translate('Тип объекта связи изменён: ') + Name);
-        Obj.Name := Name;
-      end;
-    FValues.Clear;
-    FBindings.Clear;
-    Items := JSON.GetValue<TJSONArray>('values');
-    if Items = nil then
-      raise Exception.Create(Translate('Отсутствует массив values в коллекции ресурсов.'));
-    for var Item in Items do
-    begin
-      Value := TNamedStyleValue.Create;
-      try
-        Value.Name := Item.GetValue<string>('name');
-        Value.Kind := Item.GetValue<string>('kind');
-        Value.Theme := FResourceTheme;
-        if Version = 3 then
-        begin
-          Value.LightValue := Item.GetValue<string>('light');
-          Value.DarkValue := Item.GetValue<string>('dark');
-        end
-        else
-        begin
-          Value.DarkValue := Item.GetValue<string>('value');
-          Value.LightValue := Value.DarkValue;
-        end;
-        ValidateNamedValue(Value);
-        if FindValue(Value.Name) <> nil then
-          raise Exception.Create(Translate('Повтор ресурса: ') + Value.Name);
-        FValues.Add(Value);
-        Value := nil;
-      finally
-        Value.Free;
-      end;
-    end;
-    Items := JSON.GetValue<TJSONArray>('bindings');
-    if Items = nil then
-      raise Exception.Create(Translate('Отсутствует массив bindings в коллекции ресурсов.'));
-    for var Item in Items do
-    begin
-      Binding := TStyleValueBinding.Create;
-      Binding.TargetName := Item.GetValue<string>('target');
-      Binding.PropertyPath := Item.GetValue<string>('property');
-      Binding.ResourceName := Item.GetValue<string>('resource');
-      FBindings.Add(Binding);
-    end;
-    Items := JSON.GetValue<TJSONArray>('groups', nil);
-    if Items <> nil then
-      for var Item in Items do
-      begin
-        var StyleGroup := TStyleGroup.Create;
-        try
-          StyleGroup.ID := Item.GetValue<string>('id');
-          StyleGroup.Title := Item.GetValue<string>('title');
-          StyleGroup.ParentID := Item.GetValue<string>('parent');
-          if StyleGroup.ID.IsEmpty or Trim(StyleGroup.Title).IsEmpty or (FindGroup(StyleGroup.ID) <> nil) then
-            raise Exception.Create(Translate('Некорректная группа стилей.'));
-          FGroups.Add(StyleGroup);
-          StyleGroup := nil;
-        finally
-          StyleGroup.Free;
-        end;
-      end;
-    for var StyleGroup in FGroups do
-    begin
-      var ParentID := StyleGroup.ParentID;
-      var Depth := 0;
-      while not ParentID.IsEmpty do
-      begin
-        var ParentGroup := FindGroup(ParentID);
-        Inc(Depth);
-        if (ParentGroup = nil) or (Depth > FGroups.Count) or (ParentID = StyleGroup.ID) then
-          raise Exception.Create(Translate('Некорректная вложенность групп стилей.'));
-        ParentID := ParentGroup.ParentID;
-      end;
-    end;
-    Items := JSON.GetValue<TJSONArray>('assignments', nil);
-    if Items <> nil then
-      for var Item in Items do
-      begin
-        var TargetName := Item.GetValue<string>('target');
-        var GroupID := Item.GetValue<string>('group');
-        var Target := FindNamedObject(TargetName);
-        if (Target = nil) or (Target.Parent <> FRoot) or (FindGroup(GroupID) = nil) or
-          SameText(Target.StyleName, '#designer') or FAssignments.ContainsKey(TargetName) then
-          raise Exception.Create(Translate('Некорректная связь ресурса с группой.'));
-        FAssignments.Add(TargetName, GroupID);
-      end;
-    Items := JSON.GetValue<TJSONArray>('styleClasses', nil);
-    if Items <> nil then
-      for var Item in Items do
-      begin
-        var TargetName := Item.GetValue<string>('target');
-        var ClassName := Item.GetValue<string>('controlClass');
-        var Target := FindNamedObject(TargetName);
-        if (Target = nil) or (Target.Parent <> FRoot) or SameText(Target.StyleName, '#designer') or
-          ClassName.IsEmpty or FStyleClasses.ContainsKey(TargetName) then
-          raise Exception.Create(Translate('Некорректное назначение класса стилю.'));
-        FStyleClasses.Add(TargetName, ClassName);
-      end;
-    var View := JSON.GetValue<TJSONObject>('view', nil);
-    if View <> nil then
-      FPendingProjectView := View.ToJSON;
-  finally
-    JSON.Free;
-  end;
+  FDocument.LoadMetadata(Text);
   UpdateValueReferences;
   SyncResourceThemeView;
 end;
 
+function TFormMain.GetNamedValues: TObjectList<TNamedStyleValue>;
+begin
+  Result := FDocument.NamedValues;
+end;
+
+function TFormMain.GetValueBindings: TObjectList<TStyleValueBinding>;
+begin
+  Result := FDocument.ValueBindings;
+end;
+
+function TFormMain.GetResourceTheme: TResourceTheme;
+begin
+  Result := FDocument.ResourceTheme;
+end;
+
 function TFormMain.FindValue(const Name: string): TNamedStyleValue;
 begin
-  Result := nil;
-  for var Value in FValues do
-    if SameText(Value.Name, Name) then
-      Exit(Value);
+  Result := FDocument.FindValue(Name);
 end;
 
 function TFormMain.FindNamedObject(const Name: string): TFmxObject;
-
-  function Find(Obj: TFmxObject): TFmxObject;
-  begin
-    Result := nil;
-    if SameText(Obj.Name, Name) then
-      Exit(Obj);
-    for var Child in ChildrenOf(Obj) do
-    begin
-      Result := Find(Child);
-      if Result <> nil then
-        Exit;
-    end;
-  end;
-
 begin
-  Result := nil;
-  if not Name.IsEmpty then
-    Result := Find(FRoot);
+  Result := FDocument.FindNamedObject(Name);
 end;
 
 function TFormMain.ResolveProperty(Obj: TFmxObject; const Path: string): TPropertyEntry;
-var
-  Context: TRttiContext;
-  Target: TObject;
-  Prop: TRttiProperty;
-  Parts: TArray<string>;
-  Part: string;
-  I, Index, Bracket: Integer;
 begin
-  Result := nil;
-  if Obj = nil then
-    Exit;
-  Context := TRttiContext.Create;
-  try
-    Target := Obj;
-    Parts := Path.Split(['.']);
-    for I := 0 to High(Parts) do
-    begin
-      Part := Parts[I];
-      Bracket := Part.IndexOf('[');
-      Index := -1;
-      if Bracket >= 0 then
-      begin
-        if not Part.EndsWith(']') or not TryStrToInt(Part.Substring(Bracket + 1,
-              Part.Length - Bracket - 2), Index) then
-          Exit;
-        Part := Part.Substring(0, Bracket);
-      end;
-      Prop := Context.GetType(Target.ClassType).GetProperty(Part);
-      if (Prop = nil) or not IsStyleProperty(Target, Prop) then
-        Exit;
-      if I = High(Parts) then
-      begin
-        Result := TPropertyEntry.Create;
-        Result.Instance := Target;
-        Result.Prop := Prop;
-        Result.Path := Path;
-        Exit;
-      end;
-      if Prop.PropertyType.TypeKind <> tkClass then
-        Exit;
-      Target := Prop.GetValue(Target).AsObject;
-      if Index >= 0 then
-      begin
-        if not (Target is TCollection) or (Index >= TCollection(Target).Count) then
-          Exit;
-        Target := TCollection(Target).Items[Index];
-      end;
-      if Target = nil then
-        Exit;
-    end;
-  finally
-    Context.Free;
-  end;
+  Result := ResolveStyleProperty(Obj, Path);
 end;
 
 procedure TFormMain.ValidateNamedValue(Value: TNamedStyleValue);
-var
-  Number: Extended;
-  IntegerValue: Int64;
-  Color, Text: string;
 begin
-  if Trim(Value.Name).IsEmpty then
-    raise Exception.Create(Translate('Имя ресурса не может быть пустым.'));
-  for var Theme := Low(TResourceTheme) to High(TResourceTheme) do
-  begin
-    Text := Value.ValueFor(Theme);
-    if SameText(Value.Kind, 'Цвет') then
-    begin
-      Color := Trim(Text);
-      if Color.StartsWith('#') then
-        Color := '$' + Color.Substring(1);
-      if not TryStrToInt64(Color, IntegerValue) or (IntegerValue < 0) or
-        (IntegerValue > Int64(High(Cardinal))) then
-        raise Exception.Create(Translate('Для цвета укажите #AARRGGBB, например #FF247AC4.'));
-    end
-    else if SameText(Value.Kind, 'Число') then
-    begin
-      if not TryStrToFloat(Text.Replace(',', '.'), Number, TFormatSettings.Invariant) or
-        IsNan(Number) or IsInfinite(Number) then
-        raise Exception.Create(Translate('Ожидается конечное число.'));
-    end
-    else if SameText(Value.Kind, 'Целое') then
-    begin
-      if not TryStrToInt64(Text, IntegerValue) then
-        raise Exception.Create(Translate('Ожидается целое число.'));
-    end
-    else if SameText(Value.Kind, 'Логическое') then
-    begin
-      if not SameText(Text, 'True') and not SameText(Text, 'False') then
-        raise Exception.Create(Translate('Логическое значение: True или False.'));
-    end
-    else if not SameText(Value.Kind, 'Текст') then
-      raise Exception.Create(Translate('Типы ресурсов: Цвет, Число, Целое, Текст, Логическое.'));
-  end;
+  FDocument.ValidateNamedValue(Value);
 end;
 
 procedure TFormMain.ValidateBinding(Value: TNamedStyleValue; Binding: TStyleValueBinding);
 begin
-  var Obj := FindNamedObject(Binding.TargetName);
-  if Obj = nil then
-    Exit;
-  var Entry := ResolveProperty(Obj, Binding.PropertyPath);
-  if Entry = nil then
-    Exit;
-  try
-    var Kind := Entry.Prop.PropertyType.TypeKind;
-    if SameText(Value.Kind, 'Цвет') and (Entry.Prop.PropertyType.Name <> 'TAlphaColor') then
-      raise Exception.Create(Translate('Цвет можно связать только со свойством TAlphaColor.'));
-    if SameText(Value.Kind, 'Число') or SameText(Value.Kind, 'Целое') then
-    begin
-      if not (Kind in [tkInteger, tkInt64, tkFloat]) then
-        raise Exception.Create(Translate('Числовой ресурс требует числового свойства.'));
-      if Kind in [tkInteger, tkInt64] then
-        for var Theme := Low(TResourceTheme) to High(TResourceTheme) do
-        begin
-          var Number := StrToInt64(Value.ValueFor(Theme));
-          if Kind = tkInteger then
-          begin
-            var Data := GetTypeData(Entry.Prop.PropertyType.Handle);
-            if ((Data.OrdType = otULong) and ((Number < 0) or (Number > High(Cardinal)))) or
-              ((Data.OrdType <> otULong) and ((Number < Data.MinValue) or (Number > Data.MaxValue))) then
-              raise EConvertError.Create(Translate('Число вне диапазона свойства.'));
-          end;
-        end;
-    end;
-    if SameText(Value.Kind, 'Текст') and not (Kind in [tkString, tkLString, tkWString, tkUString]) then
-      raise Exception.Create(Translate('Текстовый ресурс требует строкового свойства.'));
-    if SameText(Value.Kind, 'Логическое') and (Entry.Prop.PropertyType.Handle <> TypeInfo(Boolean)) then
-      raise Exception.Create(Translate('Логический ресурс требует свойства Boolean.'));
-  finally
-    Entry.Free;
-  end;
+  FDocument.ValidateBinding(Value, Binding);
 end;
 
 procedure TFormMain.ApplyBindings;
-var
-  Entry: TPropertyEntry;
-  Value: TNamedStyleValue;
-  Obj: TFmxObject;
 begin
-  for var Resource in FValues do
-    Resource.Theme := FResourceTheme;
-  for var Binding in FBindings do
-  begin
-    Value := FindValue(Binding.ResourceName);
-    Obj := FindNamedObject(Binding.TargetName);
-    if (Value = nil) or (Obj = nil) then
-      Continue;
-    Entry := ResolveProperty(Obj, Binding.PropertyPath);
-    if Entry = nil then
-      Continue;
-    try
-      ValidateBinding(Value, Binding);
-      SetPropertyText(Entry, Value.Value);
-    finally
-      Entry.Free;
-    end;
-  end;
+  FDocument.ApplyBindings(FSelected);
 end;
 
 procedure TFormMain.UpdateValueReferences;
 begin
   FValueReference.Items.Clear;
-  for var Value in FValues do
+  for var Value in FDocument.NamedValues do
     FValueReference.Items.Add(Value.Name);
-  if FValues.Count > 0 then
+  if FDocument.NamedValues.Count > 0 then
     FValueReference.ItemIndex := 0;
 end;
 
@@ -4951,7 +3655,7 @@ begin
   BindButton.Enabled := FEntries[Index].Prop.IsWritable and
     (FEntries[Index].Prop.PropertyType.TypeKind <> tkClass) and
     (FEntries[Index].Prop.Name <> 'StyleName');
-  for var Binding in FBindings do
+  for var Binding in FDocument.ValueBindings do
     if (Binding.TargetName = FSelected.Name) and (Binding.PropertyPath = FEntries[Index].Path) then
     begin
       UnbindButton.Enabled := True;
@@ -4982,15 +3686,15 @@ begin
       ID := TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
       FSelected.Name := 'SBD_' + ID;
     end;
-    for var I := FBindings.Count - 1 downto 0 do
-      if (FBindings[I].TargetName = FSelected.Name) and
-        (FBindings[I].PropertyPath = Entry.Path) then
-        FBindings.Delete(I);
+    for var I := FDocument.ValueBindings.Count - 1 downto 0 do
+      if (FDocument.ValueBindings[I].TargetName = FSelected.Name) and
+        (FDocument.ValueBindings[I].PropertyPath = Entry.Path) then
+        FDocument.ValueBindings.Delete(I);
     Binding := TStyleValueBinding.Create;
     Binding.TargetName := FSelected.Name;
     Binding.PropertyPath := Entry.Path;
     Binding.ResourceName := FValueReference.Items[FValueReference.ItemIndex];
-    FBindings.Add(Binding);
+    FDocument.ValueBindings.Add(Binding);
     ApplyBindings;
     FUndo.Add(State);
     FRedo.Clear;
@@ -5009,11 +3713,11 @@ begin
     (SelectedPropertyIndex >= FEntries.Count) then
     Exit;
   Path := FEntries[SelectedPropertyIndex].Path;
-  for var I := FBindings.Count - 1 downto 0 do
-    if (FBindings[I].TargetName = FSelected.Name) and (FBindings[I].PropertyPath = Path) then
+  for var I := FDocument.ValueBindings.Count - 1 downto 0 do
+    if (FDocument.ValueBindings[I].TargetName = FSelected.Name) and (FDocument.ValueBindings[I].PropertyPath = Path) then
     begin
       Remember;
-      FBindings.Delete(I);
+      FDocument.ValueBindings.Delete(I);
       Changed;
       Exit;
     end;
@@ -5029,7 +3733,7 @@ begin
   Stream := TMemoryStream.Create;
   try
     UpdateDesignerMetadata;
-    TStyleStreaming.SaveToStream(FRoot, Style, TStyleFormat.Binary);
+    TStyleStreaming.SaveToStream(FDocument.Root, Style, TStyleFormat.Binary);
     Size := Style.Size;
     Stream.WriteBuffer(Size, SizeOf(Size));
     Stream.WriteBuffer(Style.Memory^, Size);
@@ -5085,11 +3789,11 @@ begin
   FProperties.Clear;
   FEntries.Clear;
   FTreeModelRoot := nil;
-  FRoot.Free;
-  FRoot := Root;
-  SetModelDesigning(FRoot);
+  FDocument.Root.Free;
+  FDocument.Root := Root;
+  SetModelDesigning(FDocument.Root);
   FPreviewDirty := True;
-  FSelected := FRoot;
+  FSelected := FDocument.Root;
   LoadMetadata(TEncoding.UTF8.GetString(Metadata));
   Changed(True, True);
 end;
@@ -5135,7 +3839,7 @@ begin
     N := Translate('Без имени');
   if FDirty then
     N := N + ' *';
-  Caption := N + ' — StyleBook Designer';
+  Caption := N + ' - StyleBook Designer';
   DocumentLabel.Text := N;
   UndoButton.Enabled := FUndo.Count > 0;
   RedoButton.Enabled := FRedo.Count > 0;
@@ -5260,20 +3964,20 @@ begin
   FProperties.Clear;
   FEntries.Clear;
   FTreeModelRoot := nil;
-  FreeAndNil(FRoot);
-  FRoot := TStyleContainer.Create(nil);
-  SetModelDesigning(FRoot);
+  FreeAndNil(FDocument.Root);
+  FDocument.Root := TStyleContainer.Create(nil);
+  SetModelDesigning(FDocument.Root);
   FPreviewDirty := True;
-  FSelected := FRoot;
+  FSelected := FDocument.Root;
   FFileName := '';
   FSelectedGroup := nil;
-  FGroups.Clear;
-  FAssignments.Clear;
-  FStyleClasses.Clear;
+  FDocument.Groups.Clear;
+  FDocument.Assignments.Clear;
+  FDocument.StyleClasses.Clear;
   FPreviewSource := nil;
-  FValues.Clear;
-  FBindings.Clear;
-  FResourceTheme := rtLight;
+  FDocument.NamedValues.Clear;
+  FDocument.ValueBindings.Clear;
+  FDocument.ResourceTheme := rtLight;
   SyncResourceThemeView;
   UpdateValueReferences;
   RebuildTree;
@@ -5323,7 +4027,7 @@ begin
     Root.Free;
     raise;
   end;
-  PreviousRoot := FRoot;
+  PreviousRoot := FDocument.Root;
   PreviousSelected := FSelected;
   PreviousGroupID := '';
   if FSelectedGroup <> nil then
@@ -5342,10 +4046,10 @@ begin
   FProperties.Clear;
   FEntries.Clear;
   FTreeModelRoot := nil;
-  FRoot := Root;
-  SetModelDesigning(FRoot);
+  FDocument.Root := Root;
+  SetModelDesigning(FDocument.Root);
   FPreviewDirty := True;
-  FSelected := FRoot;
+  FSelected := FDocument.Root;
   FFileName := AFileName;
   Stage('replace');
   try
@@ -5368,8 +4072,8 @@ begin
     FEntries.Clear;
     FreeAndNil(FDesignRoot);
     FTreeModelRoot := nil;
-    FRoot.Free;
-    FRoot := PreviousRoot;
+    FDocument.Root.Free;
+    FDocument.Root := PreviousRoot;
     FSelected := PreviousSelected;
     LoadMetadata(PreviousMetadata);
     FSelectedGroup := FindGroup(PreviousGroupID);
@@ -5433,7 +4137,7 @@ function TFormMain.ObjectText: string;
 var
   Obj: TFmxObject;
 begin
-  if (FSelected = nil) or (FSelected = FRoot) then
+  if (FSelected = nil) or (FSelected = FDocument.Root) then
     raise Exception.Create(Translate('Выберите элемент стиля для копирования.'));
   Result := '';
   for var Model in SelectedTreeModels do
@@ -5459,7 +4163,7 @@ end;
 
 procedure TFormMain.CopyObject;
 begin
-  if (FSelected = nil) or (FSelected = FRoot) then
+  if (FSelected = nil) or (FSelected = FDocument.Root) then
     Exit;
   ClipboardService.SetClipboard(TValue.From<string>(ObjectText));
 end;
@@ -5491,8 +4195,8 @@ begin
     raise Exception.Create(Translate('Буфер обмена не содержит текст DFM/FMX.'));
   Parent := FSelected;
   if Parent = nil then
-    Parent := FRoot;
-  if not ((Parent = FRoot) or (Parent is TControl) or (Parent is TControl3D)) then
+    Parent := FDocument.Root;
+  if not ((Parent = FDocument.Root) or (Parent is TControl) or (Parent is TControl3D)) then
     raise Exception.Create(Translate('Выберите визуальный родительский объект в дереве.'));
   // A temporary parent accepts several sibling objects copied by Delphi.
   Source := TStringStream.Create('object SBDClipboard: TLayout' + sLineBreak + Text.Trim +
@@ -5513,7 +4217,7 @@ begin
     end;
     for var Child in EditableChildren(Holder) do
     begin
-      if (Parent = FRoot) and ((Child is TAnimation) or (Child is TEffect)) then
+      if (Parent = FDocument.Root) and ((Child is TAnimation) or (Child is TEffect)) then
         raise Exception.Create(Translate('Анимацию или эффект нужно добавить в визуальный ресурс.'));
       var Obj := Child.Clone(nil);
       Objects.Add(Obj);
@@ -5526,7 +4230,7 @@ begin
     while Objects.Count > 0 do
     begin
       var Obj := Objects[0];
-      if Parent = FRoot then
+      if Parent = FDocument.Root then
       begin
         var StyleName := Obj.StyleName;
         if StyleName.IsEmpty then
@@ -5535,10 +4239,10 @@ begin
       end;
       Obj.Parent := Parent;
       Objects.Extract(Obj);
-      if (Parent = FRoot) and (FSelectedGroup <> nil) then
+      if (Parent = FDocument.Root) and (FSelectedGroup <> nil) then
       begin
         Obj.Name := 'SBD_' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
-        FAssignments.AddOrSetValue(Obj.Name, FSelectedGroup.ID);
+        FDocument.Assignments.AddOrSetValue(Obj.Name, FSelectedGroup.ID);
       end;
       FSelected := Obj;
     end;
@@ -5625,7 +4329,7 @@ var
   ResourceIndex: Integer;
   Reordered: Boolean;
 begin
-  Desired := ChildrenOf(FRoot);
+  Desired := ChildrenOf(FDocument.Root);
   Resources := TList<TFmxObject>.Create;
   try
     for var Obj in Desired do
@@ -5711,7 +4415,7 @@ begin
         Group.ID := TGUID.NewGuid.ToString;
         Group.Title := Definition.ClassName + ' (' + Plan.Main.StyleName + ')';
         Group.ParentID := ParentID;
-        FGroups.Add(Group);
+        FDocument.Groups.Add(Group);
         GroupID := Group.ID;
       end;
       var Main := Plan.Main;
@@ -5719,12 +4423,12 @@ begin
       begin
         var Obj := Plan.Resources[0];
         SetModelDesigning(Obj);
-        Obj.Parent := FRoot;
+        Obj.Parent := FDocument.Root;
         Plan.Resources.Extract(Obj);
         if not GroupID.IsEmpty then
         begin
           Obj.Name := 'SBD_' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
-          FAssignments.AddOrSetValue(Obj.Name, GroupID);
+          FDocument.Assignments.AddOrSetValue(Obj.Name, GroupID);
         end;
       end;
       if IsPreviewClass(Definition.ClassName) then
@@ -5756,7 +4460,7 @@ begin
   I := 1;
   repeat
     Exists := False;
-    for Child in ChildrenOf(FRoot) do
+    for Child in ChildrenOf(FDocument.Root) do
       if SameText(Child.StyleName, Result) then
       begin
         Exists := True;
@@ -5779,14 +4483,14 @@ begin
     raise Exception.Create(Translate('Класс не найден: ') + AClassName);
   Parent := FSelected;
   if Parent = nil then
-    Parent := FRoot;
-  if not ((Parent = FRoot) or (Parent is TControl) or (Parent is TControl3D)) then
+    Parent := FDocument.Root;
+  if not ((Parent = FDocument.Root) or (Parent is TControl) or (Parent is TControl3D)) then
     raise Exception.Create(Translate('Выберите визуальный родительский объект в дереве.'));
-  if (Parent = FRoot) and (C.InheritsFrom(TAnimation) or C.InheritsFrom(TEffect)) then
+  if (Parent = FDocument.Root) and (C.InheritsFrom(TAnimation) or C.InheritsFrom(TEffect)) then
     raise Exception.Create(Translate('Анимацию или эффект нужно добавить в визуальный ресурс.'));
   Obj := C.Create(nil);
   try
-    if Parent = FRoot then
+    if Parent = FDocument.Root then
       Obj.StyleName := UniqueStyleName(AClassName.Substring(1) + 'style')
     else
       Obj.StyleName := AClassName.Substring(1).ToLower;
@@ -5794,7 +4498,7 @@ begin
     begin
       TControl(Obj).SetBounds(10, 10, 160, 40);
       TControl(Obj).HitTest := False;
-      if Parent = FRoot then
+      if Parent = FDocument.Root then
         TControl(Obj).Position.Point := PointF(0, 0);
     end;
     if Obj is TAnimation then
@@ -5806,10 +4510,10 @@ begin
     Remember;
     SetModelDesigning(Obj);
     Obj.Parent := Parent;
-    if (Parent = FRoot) and (FSelectedGroup <> nil) then
+    if (Parent = FDocument.Root) and (FSelectedGroup <> nil) then
     begin
       Obj.Name := 'SBD_' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
-      FAssignments.AddOrSetValue(Obj.Name, FSelectedGroup.ID);
+      FDocument.Assignments.AddOrSetValue(Obj.Name, FSelectedGroup.ID);
     end;
     FSelectedGroup := nil;
     FSelected := Obj;
@@ -5822,17 +4526,17 @@ end;
 
 procedure TFormMain.DetachPropertyBinding(Obj: TFmxObject; const Path: string);
 begin
-  for var I := FBindings.Count - 1 downto 0 do
-    if (FBindings[I].TargetName = Obj.Name) and (FBindings[I].PropertyPath = Path) then
-      FBindings.Delete(I);
+  for var I := FDocument.ValueBindings.Count - 1 downto 0 do
+    if (FDocument.ValueBindings[I].TargetName = Obj.Name) and (FDocument.ValueBindings[I].PropertyPath = Path) then
+      FDocument.ValueBindings.Delete(I);
 end;
 
 procedure TFormMain.RemoveObjectBindings(Obj: TFmxObject);
 begin
-  FStyleClasses.Remove(Obj.Name);
-  for var I := FBindings.Count - 1 downto 0 do
-    if FBindings[I].TargetName = Obj.Name then
-      FBindings.Delete(I);
+  FDocument.StyleClasses.Remove(Obj.Name);
+  for var I := FDocument.ValueBindings.Count - 1 downto 0 do
+    if FDocument.ValueBindings[I].TargetName = Obj.Name then
+      FDocument.ValueBindings.Delete(I);
   for var Child in ChildrenOf(Obj) do
     RemoveObjectBindings(Child);
 end;
@@ -5851,7 +4555,7 @@ begin
     begin
       if FSelectedGroup <> nil then
         Models.Add(FSelectedGroup)
-      else if (FSelected <> nil) and (FSelected <> FRoot) then
+      else if (FSelected <> nil) and (FSelected <> FDocument.Root) then
         Models.Add(FSelected);
     end;
     Result := Models.ToArray;
@@ -5878,27 +4582,27 @@ begin
   FDesignViewport.Visible := False;
   FProperties.Clear;
   FEntries.Clear;
-  FSelected := FRoot;
+  FSelected := FDocument.Root;
   FSelectedGroup := nil;
   for var Model in Models do
     if Model is TStyleGroup then
     begin
       var Group := TStyleGroup(Model);
-      for var Child in FGroups do
+      for var Child in FDocument.Groups do
         if Child.ParentID = Group.ID then
           Child.ParentID := Group.ParentID;
-      for var Key in FAssignments.Keys.ToArray do
-        if FAssignments[Key] = Group.ID then
+      for var Key in FDocument.Assignments.Keys.ToArray do
+        if FDocument.Assignments[Key] = Group.ID then
           if Group.ParentID.IsEmpty then
-            FAssignments.Remove(Key)
+            FDocument.Assignments.Remove(Key)
           else
-            FAssignments.AddOrSetValue(Key, Group.ParentID);
-      FGroups.Remove(Group);
+            FDocument.Assignments.AddOrSetValue(Key, Group.ParentID);
+      FDocument.Groups.Remove(Group);
     end
-    else if (Model is TFmxObject) and (Model <> FRoot) then
+    else if (Model is TFmxObject) and (Model <> FDocument.Root) then
     begin
       RemoveObjectBindings(TFmxObject(Model));
-      FAssignments.Remove(TFmxObject(Model).Name);
+      FDocument.Assignments.Remove(TFmxObject(Model).Name);
       Model.Free;
     end;
   Changed;
@@ -5908,7 +4612,7 @@ procedure TFormMain.DeleteObject;
 var
   Parent: TFmxObject;
 begin
-  if (FSelected = nil) or (FSelected = FRoot) then
+  if (FSelected = nil) or (FSelected = FDocument.Root) then
     Exit;
   Remember;
   Parent := EditableParent(FSelected);
@@ -5917,7 +4621,7 @@ begin
   FProperties.Clear;
   FEntries.Clear;
   RemoveObjectBindings(FSelected);
-  FAssignments.Remove(FSelected.Name);
+  FDocument.Assignments.Remove(FSelected.Name);
   FSelected.Free;
   FSelected := Parent;
   Changed;
@@ -5938,7 +4642,7 @@ var
   Copies: TObjectList<TFmxObject>;
   Created: TList<TFmxObject>;
 begin
-  if (FSelected = nil) or (FSelected = FRoot) then
+  if (FSelected = nil) or (FSelected = FDocument.Root) then
     Exit;
   Models := SelectedTreeModels;
   Copies := TObjectList<TFmxObject>.Create;
@@ -5958,7 +4662,7 @@ begin
     begin
       var Original := TFmxObject(Model);
       var Copy := Copies[0];
-      if Original.Parent = FRoot then
+      if Original.Parent = FDocument.Root then
         Copy.StyleName := UniqueStyleName(Original.StyleName + '_copy');
       Copy.Parent := Original.Parent;
       Copy.Index := Original.Index + 1;
@@ -5968,14 +4672,14 @@ begin
       if not AssignedClass.IsEmpty then
       begin
         Copy.Name := 'SBD_' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
-        FStyleClasses.AddOrSetValue(Copy.Name, AssignedClass);
+        FDocument.StyleClasses.AddOrSetValue(Copy.Name, AssignedClass);
       end;
       var GroupID := GroupOf(Original);
       if not GroupID.IsEmpty then
       begin
         if AssignedClass.IsEmpty then
           Copy.Name := 'SBD_' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
-        FAssignments.AddOrSetValue(Copy.Name, GroupID);
+        FDocument.Assignments.AddOrSetValue(Copy.Name, GroupID);
       end;
       FSelected := Copy;
     end;
@@ -6005,7 +4709,7 @@ var
   Parent, Target: TFmxObject;
   Index, MoveIndex: Integer;
 begin
-  if (FSelected = nil) or (FSelected = FRoot) then
+  if (FSelected = nil) or (FSelected = FDocument.Root) then
     Exit;
   Parent := FSelected.Parent;
   Target := nil;
@@ -6018,7 +4722,7 @@ begin
           MoveIndex := Parent.ChildrenCount - 1
         else
           MoveIndex := 0;
-        if (Parent = FRoot) and SameText(Parent.Children[MoveIndex].StyleName, '#designer') then
+        if (Parent = FDocument.Root) and SameText(Parent.Children[MoveIndex].StyleName, '#designer') then
           Dec(MoveIndex);
         if MoveIndex = Index then
           Exit;
@@ -6031,7 +4735,7 @@ begin
           else
             Inc(MoveIndex);
         until (MoveIndex < 0) or (MoveIndex >= Parent.ChildrenCount) or
-              ((Parent <> FRoot) or (not SameText(Parent.Children[MoveIndex].StyleName, '#designer') and
+              ((Parent <> FDocument.Root) or (not SameText(Parent.Children[MoveIndex].StyleName, '#designer') and
               (GroupOf(Parent.Children[MoveIndex]) = GroupOf(FSelected))));
         if (MoveIndex < 0) or (MoveIndex >= Parent.ChildrenCount) then
           Exit;
@@ -6048,7 +4752,7 @@ begin
       end;
     acOutdent:
       begin
-        if Parent = FRoot then
+        if Parent = FDocument.Root then
         begin
           var StyleGroup := FindGroup(GroupOf(FSelected));
           if StyleGroup <> nil then
@@ -6057,7 +4761,7 @@ begin
         end;
         Parent := EditableParent(FSelected);
         Target := EditableParent(Parent);
-        if (Target = FRoot) and not ((FSelected is TControl) or (FSelected is TControl3D)) then
+        if (Target = FDocument.Root) and not ((FSelected is TControl) or (FSelected is TControl3D)) then
           raise Exception.Create(Translate('Невизуальный объект должен оставаться внутри ресурса.'));
       end;
   end;
@@ -6071,12 +4775,12 @@ begin
       begin
         FSelected.Parent := Target;
         FSelected.Index := Parent.Index + 1;
-        if Target = FRoot then
+        if Target = FDocument.Root then
           FSelected.StyleName := UniqueStyleName(FSelected.StyleName + 'style');
       end;
   end;
-  if FSelected.Parent <> FRoot then
-    FAssignments.Remove(FSelected.Name);
+  if FSelected.Parent <> FDocument.Root then
+    FDocument.Assignments.Remove(FSelected.Name);
   Changed;
 end;
 
@@ -6125,24 +4829,24 @@ begin
   FProperties.Clear;
   FEntries.Clear;
   FTreeModelRoot := nil;
-  FRoot.Free;
-  FRoot := Root;
-  SetModelDesigning(FRoot);
+  FDocument.Root.Free;
+  FDocument.Root := Root;
+  SetModelDesigning(FDocument.Root);
   FPreviewDirty := True;
-  FSelected := FRoot;
+  FSelected := FDocument.Root;
   FFileName := '';
   FSelectedGroup := nil;
-  FGroups.Clear;
-  FAssignments.Clear;
-  FStyleClasses.Clear;
+  FDocument.Groups.Clear;
+  FDocument.Assignments.Clear;
+  FDocument.StyleClasses.Clear;
   FPreviewSource := nil;
-  FValues.Clear;
-  FBindings.Clear;
+  FDocument.NamedValues.Clear;
+  FDocument.ValueBindings.Clear;
   UpdateValueReferences;
   RebuildTree;
   ClearHistory;
   FSavedState := nil;
-  FResourceTheme := rtLight;
+  FDocument.ResourceTheme := rtLight;
   SyncResourceThemeView;
   Changed(False);
 end;
@@ -6150,19 +4854,19 @@ end;
 function TFormMain.SelectedStyleRoot: TFmxObject;
 begin
   Result := FSelected;
-  if (Result = nil) or (Result = FRoot) then
+  if (Result = nil) or (Result = FDocument.Root) then
     Exit(nil);
-  while (Result.Parent <> nil) and (Result.Parent <> FRoot) do
+  while (Result.Parent <> nil) and (Result.Parent <> FDocument.Root) do
     Result := Result.Parent;
-  if (Result.Parent <> FRoot) or SameText(Result.StyleName, '#designer') then
+  if (Result.Parent <> FDocument.Root) or SameText(Result.StyleName, '#designer') then
     Result := nil;
 end;
 
 function TFormMain.AssignedStyleClass(Resource: TFmxObject): string;
 begin
   Result := '';
-  if (Resource <> nil) and (Resource.Parent = FRoot) then
-    FStyleClasses.TryGetValue(Resource.Name, Result);
+  if (Resource <> nil) and (Resource.Parent = FDocument.Root) then
+    FDocument.StyleClasses.TryGetValue(Resource.Name, Result);
 end;
 
 function TFormMain.IsPreviewClass(const ClassName: string): Boolean;
@@ -6241,18 +4945,18 @@ end;
 procedure TFormMain.StoreStyleClass(Resource: TFmxObject; const ClassName: string);
 begin
   if ClassName.IsEmpty then
-    FStyleClasses.Remove(Resource.Name)
+    FDocument.StyleClasses.Remove(Resource.Name)
   else
   begin
     if Resource.Name = '' then
       Resource.Name := 'SBD_' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '_');
-    FStyleClasses.AddOrSetValue(Resource.Name, ClassName);
+    FDocument.StyleClasses.AddOrSetValue(Resource.Name, ClassName);
   end;
 end;
 
 procedure TFormMain.AssignStyleClass(Resource: TFmxObject; const ClassName: string);
 begin
-  if (Resource = nil) or (Resource.Parent <> FRoot) or SameText(Resource.StyleName, '#designer') then
+  if (Resource = nil) or (Resource.Parent <> FDocument.Root) or SameText(Resource.StyleName, '#designer') then
     raise Exception.Create(Translate('Класс назначается только корневому стилю.'));
   if not ClassName.IsEmpty and not IsPreviewClass(ClassName) then
     raise Exception.Create(Translate('Класс не найден: ') + ClassName);
@@ -6387,7 +5091,7 @@ begin
   Errors := TStringList.Create;
   try
     Names.CaseSensitive := False;
-    for Child in ChildrenOf(FRoot) do
+    for Child in ChildrenOf(FDocument.Root) do
     begin
       if SameText(Child.StyleName, '#designer') then
         Continue;
@@ -6445,7 +5149,7 @@ begin
   var Background := TBrush.Create(TBrushKind.Solid, $FFFFFFFF);
   try
     ConfigureWorkspaceBackground(Background);
-    var Dialog := TBitmapLinksEditorForm.CreateEditor(Self, FSelected, FRoot, Links, Path, Background);
+    var Dialog := TBitmapLinksEditorForm.CreateEditor(Self, FSelected, FDocument.Root, Links, Path, Background);
     try
       if Dialog.ShowModal = mrOk then
         ApplyBitmapLinks(Dialog);
@@ -6471,11 +5175,11 @@ begin
     Remember;
     Dialog.Commit;
     for var Path in Paths do
-      for var I := FBindings.Count - 1 downto 0 do
-        if (FBindings[I].TargetName = FSelected.Name) and
-          ((FBindings[I].PropertyPath = Path) or FBindings[I].PropertyPath.StartsWith(Path + '.') or
-          FBindings[I].PropertyPath.StartsWith(Path + '[')) then
-          FBindings.Delete(I);
+      for var I := FDocument.ValueBindings.Count - 1 downto 0 do
+        if (FDocument.ValueBindings[I].TargetName = FSelected.Name) and
+          ((FDocument.ValueBindings[I].PropertyPath = Path) or FDocument.ValueBindings[I].PropertyPath.StartsWith(Path + '.') or
+          FDocument.ValueBindings[I].PropertyPath.StartsWith(Path + '[')) then
+          FDocument.ValueBindings.Delete(I);
     Changed;
   finally
     Paths.Free;
@@ -6487,7 +5191,7 @@ var
   Dialog: TNamedValuesDialog;
   State: TBytes;
 begin
-  Dialog := TNamedValuesDialog.CreateEditor(Self);
+  Dialog := TNamedValuesDialog.CreateEditor(Self, FDocument);
   try
     if (Dialog.ShowModal <> mrOk) or not Dialog.IsChanged then
       Exit;
@@ -6500,12 +5204,12 @@ begin
     end;
     State := Snapshot;
     try
-      FValues.Clear;
+      FDocument.NamedValues.Clear;
       while Dialog.Values.Count > 0 do
-        FValues.Add(Dialog.Values.Extract(Dialog.Values[0]));
-      FBindings.Clear;
+        FDocument.NamedValues.Add(Dialog.Values.Extract(Dialog.Values[0]));
+      FDocument.ValueBindings.Clear;
       while Dialog.Bindings.Count > 0 do
-        FBindings.Add(Dialog.Bindings.Extract(Dialog.Bindings[0]));
+        FDocument.ValueBindings.Add(Dialog.Bindings.Extract(Dialog.Bindings[0]));
       ApplyBindings;
     except
       Restore(State);
@@ -6521,3174 +5225,6 @@ begin
   finally
     Dialog.Free;
   end;
-end;
-
-procedure TFormMain.PerformanceTest(const FileName: string);
-var
-  Log: TStringList;
-  Watch: TStopwatch;
-
-  procedure RecordTime(const Operation: string);
-  begin
-    Watch.Stop;
-    Log.Add(Operation + ': ' + Watch.ElapsedMilliseconds.ToString + ' ms');
-  end;
-
-begin
-  Log := TStringList.Create;
-  try
-    Log.Add(FileName);
-    Watch := TStopwatch.StartNew;
-    LoadDocument(FileName);
-    Show;
-    Application.ProcessMessages;
-    RecordTime('Load');
-    Log.Add(FLastLoadPhases);
-    Watch := TStopwatch.StartNew;
-    LoadDocument(FileName);
-    Application.ProcessMessages;
-    RecordTime('Open file in shown editor');
-    Log.Add(FLastLoadPhases);
-    Log.Add('Resources: ' + StyleResourceCount.ToString + '; tree nodes: ' + Length(TreeItems(FTree)).ToString);
-    var Resource: TFmxObject := nil;
-    for var Child in ChildrenOf(FRoot) do
-      if SameText(Child.StyleName, 'buttonstyle') and (Child is TControl) then
-        Resource := Child;
-    if Resource = nil then
-      for var Child in ChildrenOf(FRoot) do
-        if (Child is TControl) and not SameText(Child.StyleName, '#designer') then
-        begin
-          Resource := Child;
-          Break;
-        end;
-    if Resource = nil then
-      raise Exception.Create('No visual resource for performance test');
-    Watch := TStopwatch.StartNew;
-    SelectObject(Resource);
-    Application.ProcessMessages;
-    RecordTime('Select resource');
-    if Resource.ChildrenCount > 0 then
-    begin
-      Watch := TStopwatch.StartNew;
-      for var I := 1 to 10 do
-        SelectObject(Resource.Children[0]);
-      Application.ProcessMessages;
-      RecordTime('10 selections inside resource');
-      Watch := TStopwatch.StartNew;
-      for var I := 0 to Resource.ChildrenCount - 1 do
-        SelectObject(Resource.Children[I]);
-      Application.ProcessMessages;
-      RecordTime('Select all different resource children');
-    end;
-    SelectObject(Resource);
-    Application.ProcessMessages;
-    Watch := TStopwatch.StartNew;
-    Snapshot;
-    RecordTime('Snapshot');
-    var ClickUndo := FUndo.Count;
-    Watch := TStopwatch.StartNew;
-    DesignDown(FResizeHandle, TMouseButton.mbLeft, [], 4, 4);
-    DesignUp(FResizeHandle, TMouseButton.mbLeft, [], 4, 4);
-    RecordTime('Canvas click without movement');
-    if (FUndo.Count <> ClickUndo) or (Length(FDragSnapshot) <> 0) then
-      raise Exception.Create('Click recorded history');
-    Watch := TStopwatch.StartNew;
-    RebuildTree;
-    Application.ProcessMessages;
-    RecordTime('Rebuild tree');
-    Log.Add(Format('Tree %d; inspector %d; design %d ms', [FLastTreeMS, FLastInspectorMS, FLastDesignMS]));
-    Log.Add(FLastTreePhases + Format('reorders=%d; reparents=%d', [FTreeReorderedCount, FTreeReparentedCount]));
-    var BeforeCreated := FTreeCreatedCount;
-    var TreeItem := FTree.Selected;
-    var InspectorEditor := FProperties.FindProperty('Opacity').Editor;
-    var DisplayCopy := FDesignRoot;
-    Watch := TStopwatch.StartNew;
-    FProperties.WriteProperty('Opacity', '0.9');
-    DeferredRefresh(nil);
-    Application.ProcessMessages;
-    RecordTime('Property edit with refresh');
-    if (BeforeCreated <> FTreeCreatedCount) or (FTree.Selected <> TreeItem) or
-      (FProperties.FindProperty('Opacity').Editor <> InspectorEditor) or (FDesignRoot <> DisplayCopy) then
-      raise Exception.Create('Property edit rebuilt existing controls');
-    if Abs(TControl(FDesignRoot).Opacity - 0.9) > 0.001 then
-      raise Exception.Create('Display copy not updated');
-    Log.Add('Property edit preserves tree, inspector and display control instances');
-    BeforeCreated := FTreeCreatedCount;
-    Watch := TStopwatch.StartNew;
-    DuplicateObject;
-    Application.ProcessMessages;
-    RecordTime('Duplicate resource');
-    if (FTreeCreatedCount - BeforeCreated) >= 100 then
-      raise Exception.Create('Duplicate rebuilt unrelated branches');
-    Log.Add('Created tree nodes: ' + (FTreeCreatedCount - BeforeCreated).ToString);
-    var Destination := FSelected;
-    if Resource.ChildrenCount > 0 then
-    begin
-      var Source := Resource.Children[0];
-      var SourceItem := FTreeItems[Pointer(Source)];
-      var DestItem := FTreeItems[Pointer(Destination)];
-      if CanDrop(SourceItem, DestItem) then
-      begin
-        Watch := TStopwatch.StartNew;
-        var Allow := True;
-        TreeDragChange(SourceItem, DestItem, Allow);
-        DeferredRefresh(nil);
-        Application.ProcessMessages;
-        RecordTime('Tree drop between resources with history');
-        if (Source.Parent <> Destination) or (FTreeItems[Pointer(Source)] <> SourceItem) then
-          raise Exception.Create('Tree drop did not retain moved row');
-        SelectObject(Destination);
-      end;
-    end;
-    Log.Add(Format('Tree %d; inspector %d; design %d ms', [FLastTreeMS, FLastInspectorMS, FLastDesignMS]));
-    Log.Add(FLastTreePhases + Format('reorders=%d; reparents=%d', [FTreeReorderedCount, FTreeReparentedCount]));
-    var BeforeCancelRoot := FRoot;
-    TreeItem := FTree.Selected;
-    InspectorEditor := FProperties.FindProperty('Opacity').Editor;
-    DisplayCopy := FDesignRoot;
-    var BeforeCancelUndo := FUndo.Count;
-    Watch := TStopwatch.StartNew;
-    TThread.ForceQueue(nil,
-      procedure
-      begin
-        for var I := 0 to Screen.FormCount - 1 do
-          if Screen.Forms[I] is TNamedValuesDialog then
-          begin
-            var Dialog := TNamedValuesDialog(Screen.Forms[I]);
-            Dialog.ResourceAction(Dialog.AddButton);
-            Dialog.ModalResult := mrCancel;
-          end;
-      end);
-    EditNamedValues;
-    RecordTime('Cancel changed resource draft');
-    if (FRoot <> BeforeCancelRoot) or (FTree.Selected <> TreeItem) or
-      (FProperties.FindProperty('Opacity').Editor <> InspectorEditor) or
-      (FDesignRoot <> DisplayCopy) or (FUndo.Count <> BeforeCancelUndo) then
-      raise Exception.Create('Cancel resource dialog changed document controls');
-    Log.Add('Cancel preserves model, tree, inspector, display and undo history');
-    FDirty := False;
-  finally
-    Log.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'performance-result.txt'), TEncoding.UTF8);
-    Log.Free;
-  end;
-end;
-
-procedure TFormMain.SelfTest;
-var
-  State: TBytes;
-  FileName, TraceFile: string;
-  Book: TStyleBook;
-  Stream: TBytesStream;
-  Picture: TBitmap;
-  Resource: TFmxObject;
-  ValuesDialog: TNamedValuesDialog;
-
-  procedure Check(Condition: Boolean; const Description: string);
-  begin
-    TFile.AppendAllText(TraceFile, Description + sLineBreak, TEncoding.UTF8);
-    if not Condition then
-      raise Exception.Create('SELFTEST: ' + Description);
-  end;
-
-  procedure CheckTreeOrder;
-  var
-    Index: Integer;
-
-    procedure Visit(Item: TTreeViewItem);
-    begin
-      Check((Item.GlobalIndex = Index) and (FTree.ItemByGlobalIndex(Index) = Item),
-        'tree global index matches displayed order ' + Index.ToString);
-      if Item.IsVisible then
-      begin
-        var Point := FTree.AbsoluteToLocal(Item.LocalToAbsolute(PointF(Item.Width - 8, Item.Height / 2)));
-        Check(FTree.ItemByPoint(Point.X, Point.Y) = Item, 'tree hit test matches row after sort ' + Index.ToString);
-      end;
-      Inc(Index);
-      if Item.IsExpanded then
-        for var I := 0 to Item.Count - 1 do
-          Visit(Item.Items[I]);
-    end;
-
-  begin
-    Index := 0;
-    for var I := 0 to FTree.Count - 1 do
-      Visit(FTree.Items[I]);
-    Check(Index = FTree.GlobalCount, 'tree visible row count matches sorted hierarchy');
-  end;
-
-  function MenuReference(Menu: TMenuItem; const Name: string): TMenuItem;
-  begin
-    Result := nil;
-    for var I := 0 to Menu.ItemsCount - 1 do
-      if SameText(Menu.Items[I].TagString, Name) then
-        Exit(Menu.Items[I]);
-  end;
-
-  function MenuClass(const ClassName: string): TMenuItem;
-  begin
-    Result := nil;
-    for var I := 0 to UsedInButton.ItemsCount - 1 do
-      if SameText(UsedInButton.Items[I].Text, ClassName) then
-        Exit(UsedInButton.Items[I]);
-  end;
-
-  function SameSnapshot(const Before, After: TBytes): Boolean;
-  begin
-    Result := (Length(Before) = Length(After)) and
-      ((Length(Before) = 0) or CompareMem(@Before[0], @After[0], Length(Before)));
-  end;
-
-  function HitDesignObject(const FormPoint: TPointF): TFmxObject;
-  var
-    Hit: IControl;
-  begin
-    Result := nil;
-    Hit := ObjectAtPoint(ClientToScreen(FormPoint));
-    if Hit <> nil then
-      Result := Hit.GetObject;
-  end;
-
-  function FindDesignObject(Copy: TFmxObject; Model: TObject): TFmxObject;
-  begin
-    Result := nil;
-    if Copy = nil then
-      Exit;
-    if Copy.TagObject = Model then
-      Exit(Copy);
-    for var Child in ChildrenOf(Copy) do
-    begin
-      Result := FindDesignObject(Child, Model);
-      if Result <> nil then
-        Exit;
-    end;
-  end;
-
-  function GuidePixels(HighlightOnly: Boolean = False): Integer;
-  var
-    Bitmap: TBitmap;
-    Data: TBitmapData;
-  begin
-    Result := 0;
-    Bitmap := TBitmap.Create(Ceil(FGuides.Width), Ceil(FGuides.Height));
-    try
-      Bitmap.Clear(0);
-      Check(Bitmap.Canvas.BeginScene, 'guide bitmap canvas available');
-      try
-        PaintGuides(FGuides, Bitmap.Canvas);
-      finally
-        Bitmap.Canvas.EndScene;
-      end;
-      Check(Bitmap.Map(TMapAccess.Read, Data), 'guide bitmap readable');
-      try
-        for var Y := 0 to Bitmap.Height - 1 do
-          for var X := 0 to Bitmap.Width - 1 do
-          begin
-            var Pixel := TAlphaColorRec(Data.GetPixel(X, Y));
-            if (Pixel.A > 0) and (not HighlightOnly or ((Pixel.R > Pixel.G) and (Pixel.B > Pixel.G))) then
-              Inc(Result);
-          end;
-      finally
-        Bitmap.Unmap(Data);
-      end;
-    finally
-      Bitmap.Free;
-    end;
-  end;
-
-  procedure SetTestProperty(const Path, Text: string);
-  begin
-    var Entry := ResolveProperty(FSelected, Path);
-    Check(Entry <> nil, 'resolve ' + Path);
-    try
-      SetPropertyText(Entry, Text);
-    finally
-      Entry.Free;
-    end;
-  end;
-
-  procedure CaptureDialog(Dialog: TForm; const ImageName: string);
-  var
-    Bitmap: TBitmap;
-  begin
-    Dialog.StyleBook := StyleBook;
-    Dialog.Show;
-    for var I := 1 to 5 do
-    begin
-      Application.ProcessMessages;
-      Sleep(20);
-    end;
-    Bitmap := TBitmap.Create(Round(Dialog.ClientWidth), Round(Dialog.ClientHeight));
-    try
-      Bitmap.Clear($FF202020);
-      if Bitmap.Canvas.BeginScene then
-      try
-        Dialog.PaintTo(Bitmap.Canvas);
-      finally
-        Bitmap.Canvas.EndScene;
-      end;
-      Bitmap.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), ImageName));
-    finally
-      Bitmap.Free;
-      Dialog.Hide;
-    end;
-  end;
-
-  procedure AddTestValue(const Name, Kind, Text, Path: string);
-  var
-    Value: TNamedStyleValue;
-    Row: Integer;
-  begin
-    Value := TNamedStyleValue.Create;
-    Value.Name := Name;
-    Value.Kind := Kind;
-    Value.Value := Text;
-    ValidateNamedValue(Value);
-    FValues.Add(Value);
-    UpdateValueReferences;
-    FValueReference.ItemIndex := FValueReference.Items.IndexOf(Name);
-    BuildProperties;
-    Row := -1;
-    for var I := 0 to FEntries.Count - 1 do
-      if FEntries[I].Path = Path then
-        Row := I;
-    Check(Row >= 0, 'binding property visible: ' + Path);
-    FProperties.SelectPath(Path);
-    FValueReference.ItemIndex := FValueReference.Items.IndexOf(Name);
-    BindSelectedProperty;
-  end;
-
-begin
-  TraceFile := System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-trace.txt');
-  TFile.WriteAllText(TraceFile, '', TEncoding.UTF8);
-  ToolsTabs.ActiveTab := InspectorTab;
-  var InspectorReport := TStringList.Create;
-  try
-    RunPropertyInspectorTests(InspectorReport);
-    RunWinUIDialogTests(Self, InspectorReport);
-    RunGradientDialogTests(Self, InspectorReport);
-    for var Message in InspectorReport do
-      Check(True, Message);
-  finally
-    InspectorReport.Free;
-  end;
-
-  Check(FClasses.ContainsKey('TButton'), 'button registered');
-  Check(FClasses.ContainsKey('TColorAnimation'), 'color animation registered');
-  Check(FClasses.ContainsKey('TGlowEffect'), 'effect registered');
-  Check(FClasses.ContainsKey('TStyleObject'), 'bitmap style object registered');
-  AddObject('TLayout');
-  FSelected.StyleName := 'buttonstyle';
-  AddObject('TRectangle');
-  SetTestProperty('Width', '215.5');
-  Check(Abs(TRectangle(FSelected).Width - 215.5) < 0.01, 'floating property conversion');
-  SetTestProperty('Fill.Color', '#FF247AC4');
-  var CollectionEditor := TCollectionDialog.CreateEditor(Self, TRectangle(FSelected).Fill.Gradient.Points, 'Fill.Gradient.Points');
-  try
-    Check((CollectionEditor.FList <> nil) and (CollectionEditor.Inspector.FindProperty('Color') <> nil), 'collection dialog loaded from FMX');
-    Check(Assigned(CollectionEditor.AddButton.OnClick), 'collection action loaded from FMX');
-    Check(CollectionEditor.StyleBook = StyleBook, 'collection inherits WinUI StyleBook');
-    CollectionEditor.Inspector.WriteProperty('Offset', '0.125');
-    Check(Abs(TRectangle(FSelected).Fill.Gradient.Points[0].Offset - 0.125) < 0.001, 'collection inspector writes typed values');
-    CollectionEditor.Inspector.WriteProperty('Offset', '0');
-    CaptureDialog(CollectionEditor, 'selftest-collection.png');
-    Check(CollectionEditor.Inspector.FindProperty('Color').Editor.Width > 120, 'collection inspector aligns columns after resize');
-  finally
-    CollectionEditor.Free;
-    BuildProperties;
-  end;
-  var BeforeGradientTest := Snapshot;
-  var GradientHistory := FUndo.Count;
-  var GradientSource := TRectangle(FSelected).Fill.Gradient;
-  var GradientDraft := TGradientEditorForm.CreateEditor(Self, GradientSource);
-  try
-    Check(FProperties.FindProperty('Fill.Gradient').Kind = iekGradient, 'main inspector offers the gradient wizard');
-    GradientDraft.AngleDial.Value := -45;
-    GradientDraft.AddPoint(0.5).Color := $7F3399FF;
-    Check(SameSnapshot(BeforeGradientTest, Snapshot) and (FUndo.Count = GradientHistory),
-      'gradient draft does not modify the document or undo history');
-    ApplyGradient(GradientSource, GradientDraft.Value, TRectangle(FSelected).Fill, 'Fill.Gradient');
-    Check((FUndo.Count = GradientHistory + 1) and
-      (TRectangle(FSelected).Fill.Kind = TBrushKind.Gradient) and
-      (TRectangle(FSelected).Fill.Gradient.Points.Count = 3), 'gradient is applied as one undo operation');
-    var AppliedGradient := Snapshot;
-    Check(not ApplyGradient(TRectangle(FSelected).Fill.Gradient, GradientDraft.Value,
-        TRectangle(FSelected).Fill, 'Fill.Gradient') and (FUndo.Count = GradientHistory + 1),
-      'applying an unchanged gradient creates no history entry');
-    Undo(False);
-    Check(SameSnapshot(BeforeGradientTest, Snapshot), 'undo restores the original gradient and solid brush');
-    Undo(True);
-    Check(SameSnapshot(AppliedGradient, Snapshot), 'redo restores gradient points, direction and brush kind');
-    Undo(False);
-    FRedo.Clear;
-    SelectObject(FRoot.Children[0].Children[0]);
-  finally
-    GradientDraft.Free;
-  end;
-  FSelected.Name := 'SBD_GradientBindingTest';
-  var GradientColorValue := TNamedStyleValue.Create;
-  GradientColorValue.Name := 'GradientStopTest';
-  GradientColorValue.Kind := 'Цвет';
-  GradientColorValue.Value := '#FF003355';
-  FValues.Add(GradientColorValue);
-  var GradientBinding := TStyleValueBinding.Create;
-  GradientBinding.TargetName := FSelected.Name;
-  GradientBinding.PropertyPath := 'Fill.Gradient.Points[0].Color';
-  GradientBinding.ResourceName := GradientColorValue.Name;
-  FBindings.Add(GradientBinding);
-  ApplyBindings;
-  Changed;
-  var BoundGradientState := Snapshot;
-  GradientDraft := TGradientEditorForm.CreateEditor(Self, TRectangle(FSelected).Fill.Gradient);
-  try
-    GradientDraft.AngleDial.Value := 30;
-    ApplyGradient(TRectangle(FSelected).Fill.Gradient, GradientDraft.Value,
-      TRectangle(FSelected).Fill, 'Fill.Gradient');
-    Check((FBindings.Count = 1) and
-      (FProperties.FindProperty('Fill.Gradient.Points[0].Color').BindingName = 'GradientStopTest'),
-      'changing only gradient direction preserves color value bindings');
-    Undo(False);
-    Check(SameSnapshot(BoundGradientState, Snapshot), 'undo restores a bound gradient');
-    SelectObject(FRoot.Children[0].Children[0]);
-  finally
-    GradientDraft.Free;
-  end;
-  GradientDraft := TGradientEditorForm.CreateEditor(Self, TRectangle(FSelected).Fill.Gradient);
-  try
-    GradientDraft.AddPoint(0.25).Color := $803399FF;
-    ApplyGradient(TRectangle(FSelected).Fill.Gradient, GradientDraft.Value,
-      TRectangle(FSelected).Fill, 'Fill.Gradient');
-    Check(FBindings.Count = 0, 'changing color stops detaches index-based bindings');
-    Undo(False);
-    Check(SameSnapshot(BoundGradientState, Snapshot) and (FBindings.Count = 1),
-      'undo restores color stop bindings together with the gradient');
-    Undo(True);
-    Check((FBindings.Count = 0) and (FUndo.Count = GradientHistory + 1),
-      'redo restores the gradient and binding changes as one operation');
-    Undo(False);
-    Restore(BeforeGradientTest);
-    FRedo.Clear;
-    SelectObject(FRoot.Children[0].Children[0]);
-  finally
-    GradientDraft.Free;
-  end;
-  var TextEditor := TTextEditorForm.Create(Self);
-  try
-    Check((TextEditor.TextMemo <> nil) and (TextEditor.ApplyButton.ModalResult = mrOk), 'text dialog loaded from FMX');
-    TextEditor.TextMemo.Lines.Text := StringOfChar('x', 160) + sLineBreak + 'second line';
-    var OriginalText := TextEditor.TextMemo.Lines.Text;
-    Check(not TextEditor.TextMemo.WordWrap, 'text editor starts without wrapping');
-    TextEditor.WordWrapCheck.IsChecked := True;
-    Check(TextEditor.TextMemo.WordWrap and (TextEditor.TextMemo.Lines.Text = OriginalText),
-      'word wrap preserves text and logical line breaks');
-    TextEditor.WordWrapCheck.IsChecked := False;
-    Check(not TextEditor.TextMemo.WordWrap and (TextEditor.TextMemo.Lines.Text = OriginalText),
-      'disabling word wrap preserves text');
-    CaptureDialog(TextEditor, 'selftest-text.png');
-  finally
-    TextEditor.Free;
-  end;
-  var ColorEditor := TColorEditorForm.Create(Self);
-  try
-    Check((ColorEditor.ColorPanel <> nil) and ColorEditor.ColorPanel.UseAlpha, 'color dialog loaded from FMX');
-    CaptureDialog(ColorEditor, 'selftest-color.png');
-  finally
-    ColorEditor.Free;
-  end;
-  Check(TRectangle(FSelected).Fill.Color = $FF247AC4, 'color property conversion');
-  for var Entry in FEntries do
-    Check((Entry.Path <> 'Name') and (Entry.Path <> 'Tag') and
-      (Entry.Path <> 'TagFloat') and (Entry.Path <> 'TagString'), 'visual service property hidden: ' + Entry.Path);
-  Check(FProperties.FindProperty('Name') = nil, 'custom inspector hides visual Name');
-  Check(FProperties.FindProperty('Tag') = nil, 'custom inspector hides visual Tag');
-  Check(FProperties.FindProperty('Fill.Color').Kind = iekColor, 'main inspector uses color editor');
-  var InlineUndoCount := FUndo.Count;
-  var InlineItem := FTree.Selected;
-  var InlineEditor := FProperties.FindProperty('Width').Editor;
-  var InlineCopy := FDesignRoot;
-  FProperties.WriteProperty('Width', '216.5');
-  DeferredRefresh(nil);
-  Check((FTree.Selected = InlineItem) and (FProperties.FindProperty('Width').Editor = InlineEditor) and
-    (FDesignRoot = InlineCopy), 'property edit reuses tree, inspector and design controls');
-  Check((Abs(TRectangle(FSelected).Width - 216.5) < 0.001) and
-    (FUndo.Count = InlineUndoCount + 1), 'inline inspector edit records history');
-  Undo(False);
-  Resource := FRoot.Children[0];
-  SelectObject(Resource.Children[0]);
-  Check(Abs(TRectangle(FSelected).Width - 215.5) < 0.001, 'inline edit undo restores property');
-  AddTestValue('Accent', 'Цвет', '#FF247AC4', 'Fill.Color');
-  AddTestValue('OutlineWidth', 'Число', '1.5', 'Stroke.Thickness');
-  AddTestValue('PointerInput', 'Логическое', 'False', 'HitTest');
-  Check(FProperties.FindProperty('Fill.Color').BindingName = 'Accent', 'binding badge in custom inspector');
-  FProperties.WriteProperty('Fill.Color', '#FF102030');
-  Check(TRectangle(FSelected).Fill.Color = $FF102030, 'inline edit changes a bound property');
-  var AccentDetached := True;
-  for var Binding in FBindings do
-    if Binding.PropertyPath = 'Fill.Color' then
-      AccentDetached := False;
-  Check(AccentDetached, 'inline edit detaches resource binding');
-  Undo(False);
-  Resource := FRoot.Children[0];
-  SelectObject(Resource.Children[0]);
-  Check(FProperties.FindProperty('Fill.Color').BindingName = 'Accent', 'inline undo restores binding');
-
-  TRectangle(FSelected).Align := TAlignLayout.Contents;
-  TRectangle(FSelected).Fill.Color := $FF247AC4;
-  SelectObject(Resource);
-  AddObject('TText');
-  AddTestValue('CaptionText', 'Текст', 'Кнопка', 'Text');
-  TText(FSelected).Align := TAlignLayout.Client;
-  SelectObject(Resource);
-  AddObject('TFloatAnimation');
-  TFloatAnimation(FSelected).PropertyName := 'Opacity';
-  SetTestProperty('Trigger', 'IsMouseOver=true');
-  Remember;
-  FindValue('Accent').Value := '#FFCC4422';
-  ApplyBindings;
-  Changed;
-  Check(TRectangle(Resource.Children[0]).Fill.Color = $FFCC4422, 'named color propagates');
-  Undo(False);
-  Resource := FRoot.Children[0];
-  Check(TRectangle(Resource.Children[0]).Fill.Color = $FF247AC4, 'undo restores named color');
-  Check(FindValue('Accent').Value = '#FF247AC4', 'undo restores catalog');
-  SelectObject(Resource.Children[2]);
-  State := Snapshot;
-  DuplicateObject;
-  Check(Resource.ChildrenCount = 4, 'duplicate animation');
-  Undo(False);
-  Check(FRoot.Children[0].ChildrenCount = 3, 'undo duplicate');
-  Undo(True);
-  Check(FRoot.Children[0].ChildrenCount = 4, 'redo duplicate');
-  Restore(State);
-  Check(FRoot.Children[0].StyleName = 'buttonstyle', 'resource name after restore');
-  FileName := System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest.style');
-  FFileName := FileName;
-  SaveDocument(False);
-  LoadDocument(FileName);
-  Check(FValues.Count = 4, 'named values persisted');
-  Check(FBindings.Count = 4, 'property bindings persisted');
-  Check(StyleResourceCount = 1, 'indexed resource count');
-  Check(FRoot.Children[0].ChildrenCount = 3, 'indexed child count');
-  SaveStyle(FileName, TStyleFormat.Text);
-  LoadDocument(FileName);
-  Check(FRoot.Children[0].ChildrenCount = 3, 'text style roundtrip');
-  var StyleStream := TMemoryStream.Create;
-  try
-    WriteStyleStream(StyleStream, TStyleFormat.Binary);
-    var Bytes: TBytes;
-    SetLength(Bytes, StyleStream.Size);
-    if Length(Bytes) > 0 then
-      Move(StyleStream.Memory^, Bytes[0], Length(Bytes));
-    Stream := TBytesStream.Create(Bytes);
-  finally
-    StyleStream.Free;
-  end;
-  Book := TStyleBook.Create(nil);
-  try
-    Book.LoadFromStream(Stream);
-    Check(Book.Style.FindStyleResource('buttonstyle') <> nil, 'TStyleBook lookup');
-  finally
-    Book.Free;
-    Stream.Free;
-  end;
-  SelectObject(FRoot.Children[0]);
-  Show;
-  ShowPreview;
-  FPreviewClass.ItemIndex := FPreviewClass.Items.IndexOf('TEdit');
-  Check((FPreviewHost.ChildrenCount = 1) and (FPreviewHost.Children[0] is TEdit) and
-    (TPreviewForm(FPreview).Inspector.InspectedObject = FPreviewHost.Children[0]),
-    'preview contains one interactive control and its inspector');
-  FPreviewClass.ItemIndex := FPreviewClass.Items.IndexOf('TButton');
-  for var I := 1 to 15 do
-  begin
-    Application.ProcessMessages;
-    Sleep(20);
-  end;
-  Check(FTree.Count = 1, 'tree resource count without root: ' + FTree.Count.ToString);
-  Check(FTree.Items[0].TagObject = FRoot.Children[0], 'tree starts directly with resources');
-  Check(FPalette.Count > 100, 'palette populated: ' + FPalette.Count.ToString);
-  Check(FEntries.Count > 10, 'inspector populated: ' + FEntries.Count.ToString);
-  Picture := TBitmap.Create(Round(FPreview.ClientWidth), Round(FPreview.ClientHeight));
-  try
-    Picture.Clear($FFF1F3F6);
-    if Picture.Canvas.BeginScene then
-    try
-      FPreview.PaintTo(Picture.Canvas);
-    finally
-      Picture.Canvas.EndScene;
-    end;
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-preview.png'));
-  finally
-    Picture.Free;
-  end;
-  Picture := FLayout.MakeScreenshot;
-  try
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-editor.png'));
-  finally
-    Picture.Free;
-  end;
-  SelectObject(FRoot.Children[0].Children[0]);
-  Check(FProperties.FindProperty('Fill.Color').BindingName = 'Accent', 'saved binding targets restored');
-  FProperties.SelectPath('Fill.Color');
-  for var I := 1 to 5 do
-  begin
-    Application.ProcessMessages;
-    Sleep(20);
-  end;
-  FProperties.Tree.RealignContent;
-  FProperties.Tree.ViewportPosition := PointF(0, 240);
-  var InspectorView := FProperties.Tree.ViewportPosition;
-  Check(InspectorView.Y > 0, 'inspector has scrollable properties');
-  FProperties.Refresh;
-  Check(Abs(FProperties.Tree.ViewportPosition.Y - InspectorView.Y) < 1, 'inspector refresh preserves viewport');
-  FProperties.SelectPath('Fill.Color');
-  for var I := 1 to 5 do
-  begin
-    Application.ProcessMessages;
-    Sleep(20);
-  end;
-  Picture := FLayout.MakeScreenshot;
-  try
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-inspector.png'));
-  finally
-    Picture.Free;
-  end;
-  SelectObject(FRoot.Children[0]);
-  Check(((IsDark and (StyleBook = StyleBookWinUI3)) or
-    (not IsDark and (StyleBook = StyleBookWinUI3Light))) and
-    (ToolsTabs.ActiveTab = InspectorTab), 'WinUI shell follows selected theme and inspector tab');
-  var PreviousAppTheme := ComboBoxTheme.ItemIndex;
-  var BeforeAppTheme := Snapshot;
-  var AppThemeHistory := FUndo.Count;
-  try
-    for var ThemeIndex := 0 to 2 do
-    begin
-      ComboBoxTheme.ItemIndex := ThemeIndex;
-      SaveApplicationTheme;
-      FBuilding := True;
-      try
-        ComboBoxTheme.ItemIndex := (ThemeIndex + 1) mod 3;
-        LoadApplicationTheme;
-      finally
-        FBuilding := False;
-      end;
-      DoOnSettingChange;
-      Check(ComboBoxTheme.ItemIndex = ThemeIndex, 'application theme survives preference reload ' + ThemeIndex.ToString);
-      if ThemeIndex = 1 then
-        Check(not IsDark and (StyleBook = StyleBookWinUI3Light) and
-          (MainBackground.Fill.Color = $FFF3F3F3), 'explicit light theme uses light surfaces')
-      else if ThemeIndex = 2 then
-        Check(IsDark and (StyleBook = StyleBookWinUI3) and
-          (MainBackground.Fill.Color = $FF202020), 'explicit dark theme uses dark surfaces');
-      DoOnSettingChange;
-      Check(ComboBoxTheme.ItemIndex = ThemeIndex, 'system appearance refresh retains explicit theme selection');
-      if ThemeIndex > 0 then
-      begin
-        WorkspaceSettingsClick(WorkspaceSettingsButton);
-        if ThemeIndex = 1 then
-          CaptureDialog(Self, 'selftest-app-light.png')
-        else
-        begin
-          CaptureDialog(Self, 'selftest-app-dark.png');
-          var DarkDialogReport := TStringList.Create;
-          try
-            RunWinUIDialogTests(Self, DarkDialogReport, '-dark');
-            RunGradientDialogTests(Self, DarkDialogReport, '-dark');
-            for var Message in DarkDialogReport do
-              Check(True, Message);
-          finally
-            DarkDialogReport.Free;
-          end;
-        end;
-        WorkspaceSettingsClick(CloseWorkspaceSettings);
-      end;
-    end;
-    TFile.WriteAllText(FPreferencesFile, '[Appearance]' + sLineBreak + 'Theme=invalid', TEncoding.UTF8);
-    FBuilding := True;
-    try
-      LoadApplicationTheme;
-    finally
-      FBuilding := False;
-    end;
-    Check(ComboBoxTheme.ItemIndex = 0, 'invalid preference falls back to system theme');
-    Check(SameSnapshot(BeforeAppTheme, Snapshot) and (FUndo.Count = AppThemeHistory),
-      'application theme does not change the document or history');
-  finally
-    ComboBoxTheme.ItemIndex := PreviousAppTheme;
-    DoOnSettingChange;
-    TFile.Delete(FPreferencesFile);
-  end;
-  Show;
-  Application.ProcessMessages;
-  Check((NewButton.Tag = acNew) and Assigned(NewButton.OnClick) and
-    (DuplicateButton.Tag = acDuplicate) and Assigned(DuplicateButton.OnClick), 'menu commands retain actions');
-  ToolsTabs.ActiveTab := PaletteTab;
-  FSearch.Text := 'TButton';
-  FilterPalette(nil);
-  Check(FPalette.Items.IndexOf('TButton') >= 0, 'palette search on component tab');
-  for var I := 1 to 10 do
-  begin
-    Application.ProcessMessages;
-    Sleep(20);
-  end;
-  Picture := FLayout.MakeScreenshot;
-  try
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-palette.png'));
-  finally
-    Picture.Free;
-  end;
-  FSearch.Text := '';
-  FilterPalette(nil);
-  ToolsTabs.ActiveTab := InspectorTab;
-  for var I := 1 to 10 do
-  begin
-    Application.ProcessMessages;
-    Sleep(20);
-  end;
-  var FullSize := PointF(Width, Height);
-  Width := Round(Constraints.MinWidth);
-  Height := Round(Constraints.MinHeight);
-  Application.ProcessMessages;
-  Check((FZoom.Width >= 100) and (FCanvas.Width > 280) and (FProperties.Width > 250), 'minimum window layout remains usable');
-  Check((FZoom.Position.Y >= ResourceThemeBox.Position.Y + ResourceThemeBox.Height) or
-    (ResourceThemeBox.Position.X + ResourceThemeBox.Width <= FZoom.Position.X),
-    'workspace theme and zoom selectors do not overlap at minimum size');
-  Picture := FLayout.MakeScreenshot;
-  try
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-compact.png'));
-  finally
-    Picture.Free;
-  end;
-  Width := Round(FullSize.X);
-  Height := Round(FullSize.Y);
-  Application.ProcessMessages;
-  var BeforeViewChange := Snapshot;
-  for var Mode := 1 to 2 do
-  begin
-    FBackgroundMode.ItemIndex := Mode;
-    Application.ProcessMessages;
-    Picture := FLayout.MakeScreenshot;
-    try
-      var ImageName := 'selftest-editor-dark.png';
-      if Mode = 2 then
-        ImageName := 'selftest-editor-transparent.png';
-      Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), ImageName));
-    finally
-      Picture.Free;
-    end;
-    if Mode = 1 then
-      CaptureDialog(FPreview, 'selftest-preview-dark.png')
-    else
-      CaptureDialog(FPreview, 'selftest-preview-transparent.png');
-  end;
-  FZoom.ItemIndex := 3;
-  Check(FZoomPercent = 200, 'zoom preset updates workspace');
-  Check(FindComponent('FZoomTrack') = nil, 'zoom trackbar removed from form');
-  FZoom.ItemIndex := FZoom.Items.IndexOf('2000%');
-  Check((FZoomPercent = 2000) and
-    (Abs(TControlAccess(FDesignRoot).Scale.X - 20) < 0.001), '2000 percent zoom');
-  SetWorkspaceZoom(777);
-  Check((FZoom.Items[FZoom.ItemIndex] = '777%') and
-    (Abs(TControlAccess(FDesignRoot).Scale.X - 7.77) < 0.001), 'intermediate zoom updates menu and design scale');
-  RefreshDesign;
-  Check(Abs(TControlAccess(FDesignRoot).Scale.X - 7.77) < 0.001, 'custom zoom preserved after design refresh');
-  FZoom.ItemIndex := FZoom.Items.IndexOf('500%');
-  Check(FZoomPercent = 500, 'zoom remains synchronized after custom value');
-  FZoom.ItemIndex := 3;
-  var Center := FSurface.AbsoluteToLocal(TControl(FDesignRoot).LocalToAbsolute(
-      PointF(TControl(FDesignRoot).Width / 2, TControl(FDesignRoot).Height / 2)));
-  Check(Abs(Center.X - FCanvas.LocalRect.CenterPoint.X) < 2, 'zoomed resource centered horizontally');
-  Check(Abs(Center.Y - FCanvas.LocalRect.CenterPoint.Y) < 2, 'zoomed resource centered vertically');
-  var PreviousWidth := Width;
-  Width := Width + 160;
-  Application.ProcessMessages;
-  Center := FSurface.AbsoluteToLocal(TControl(FDesignRoot).LocalToAbsolute(
-      PointF(TControl(FDesignRoot).Width / 2, TControl(FDesignRoot).Height / 2)));
-  Check(Abs(Center.X - FCanvas.LocalRect.CenterPoint.X) < 2, 'resource centered after window resize');
-  Width := PreviousWidth;
-  Application.ProcessMessages;
-  var PanSelection := FSelected;
-  var HistoryBeforePan := FUndo.Count;
-  DesignDown(FSurface, TMouseButton.mbMiddle, [ssMiddle], 50, 50);
-  DesignMove(FSurface, [ssMiddle], 1250, -850);
-  Check(FPanning and (Abs(FPanOffset.X - 1200) < 0.01) and
-    (Abs(FPanOffset.Y + 900) < 0.01), 'middle mouse pans beyond viewport in both directions');
-  DesignMove(FSurface, [ssMiddle], -1450, 2050);
-  DesignUp(FSurface, TMouseButton.mbMiddle, [], -1450, 2050);
-  Check(not FPanning and (Abs(FPanOffset.X + 1500) < 0.01) and
-    (Abs(FPanOffset.Y - 2000) < 0.01), 'pan is unrestricted and releases capture');
-  Check((FSelected = PanSelection) and (FUndo.Count = HistoryBeforePan), 'pan preserves selection and history');
-  RefreshDesign;
-  Check((Abs(FPanOffset.X + 1500) < 0.01) and
-    (Abs(FPanOffset.Y - 2000) < 0.01), 'pan survives design refresh');
-  FPanOffset := PointF(75, -35);
-  CenterDesign;
-  var ZoomAnchor := PointF(FCanvas.Width * 0.3, FCanvas.Height * 0.4);
-  var AnchorInResource := TControl(FDesignRoot).AbsoluteToLocal(FCanvas.LocalToAbsolute(ZoomAnchor));
-  var WheelZoomBefore := FZoomPercent;
-  WorkspaceZoomAt(ZoomAnchor, 60);
-  Check(FZoomPercent = WheelZoomBefore, 'partial wheel delta is accumulated');
-  WorkspaceZoomAt(ZoomAnchor, 60);
-  Check(FZoomPercent > WheelZoomBefore, 'mouse wheel zooms in');
-  var AnchorAfterZoom := FCanvas.AbsoluteToLocal(TControl(FDesignRoot).LocalToAbsolute(AnchorInResource));
-  Check((Abs(AnchorAfterZoom.X - ZoomAnchor.X) < 0.1) and
-    (Abs(AnchorAfterZoom.Y - ZoomAnchor.Y) < 0.1), 'wheel zoom preserves point under cursor');
-  WorkspaceZoomAt(ZoomAnchor, -120);
-  Check(FZoomPercent < Round(WheelZoomBefore * 1.1), 'mouse wheel zooms out');
-  SetWorkspaceZoom(MaxWorkspaceZoom);
-  WorkspaceZoomAt(ZoomAnchor, 120);
-  Check(FZoomPercent = MaxWorkspaceZoom, 'wheel respects maximum zoom');
-  SetWorkspaceZoom(MinWorkspaceZoom);
-  WorkspaceZoomAt(ZoomAnchor, -120);
-  Check(FZoomPercent = MinWorkspaceZoom, 'wheel respects minimum zoom');
-  DesignDown(FSurface, TMouseButton.mbMiddle, [ssMiddle], 50, 50);
-  WorkspaceDeactivate(nil);
-  Check(not FPanning, 'pan ends when window deactivates');
-  FPanOffset := TPointF.Zero;
-  CenterDesign;
-  FZoom.ItemIndex := 1;
-  FBackgroundMode.ItemIndex := 0;
-  var AfterViewChange := Snapshot;
-  Check((Length(BeforeViewChange) = Length(AfterViewChange)) and
-    CompareMem(@BeforeViewChange[0], @AfterViewChange[0], Length(BeforeViewChange)), 'workspace settings preserve style data');
-  ValuesDialog := TNamedValuesDialog.CreateEditor(Self);
-  try
-    ValuesDialog.Show;
-    for var I := 1 to 8 do
-    begin
-      Application.ProcessMessages;
-      Sleep(20);
-    end;
-    Picture := TBitmap.Create(Round(ValuesDialog.ClientWidth), Round(ValuesDialog.ClientHeight));
-    try
-      Picture.Clear($FFF1F3F6);
-      if Picture.Canvas.BeginScene then
-      try
-        ValuesDialog.PaintTo(Picture.Canvas);
-      finally
-        Picture.Canvas.EndScene;
-      end;
-      Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-resources.png'));
-    finally
-      Picture.Free;
-    end;
-  finally
-    ValuesDialog.Free;
-  end;
-  var BeforeDraftRoot := FRoot;
-  var BeforeDraftItem := FTree.Selected;
-  var BeforeDraftCopy := FDesignRoot;
-  var BeforeDraftInspector := FProperties.FindProperty('Width').Editor;
-  var BeforeDraftUndo := FUndo.Count;
-  var BeforeDraftMetadata := MetadataJSON;
-  TThread.ForceQueue(nil,
-    procedure
-    begin
-      for var I := 0 to Screen.FormCount - 1 do
-        if Screen.Forms[I] is TNamedValuesDialog then
-        begin
-          var Dialog := TNamedValuesDialog(Screen.Forms[I]);
-          Dialog.EditValue(Dialog, 0, 0, TValue.From<string>('DraftAccent'));
-          Dialog.ResourceAction(Dialog.AddButton);
-          Dialog.ModalResult := mrCancel;
-        end;
-    end);
-  EditNamedValues;
-  Check((FRoot = BeforeDraftRoot) and (FTree.Selected = BeforeDraftItem) and
-    (FDesignRoot = BeforeDraftCopy) and (FProperties.FindProperty('Width').Editor = BeforeDraftInspector) and
-    (FUndo.Count = BeforeDraftUndo) and (MetadataJSON = BeforeDraftMetadata), 'cancel changed resources draft preserves document and all controls');
-  TThread.ForceQueue(nil,
-    procedure
-    begin
-      for var I := 0 to Screen.FormCount - 1 do
-        if Screen.Forms[I] is TNamedValuesDialog then
-          Screen.Forms[I].ModalResult := mrOk;
-    end);
-  EditNamedValues;
-  Check((FRoot = BeforeDraftRoot) and (FTree.Selected = BeforeDraftItem) and
-    (FUndo.Count = BeforeDraftUndo) and (FDesignRoot = BeforeDraftCopy), 'apply unchanged resources avoids document updates');
-  TThread.ForceQueue(nil,
-    procedure
-    begin
-      for var I := 0 to Screen.FormCount - 1 do
-        if Screen.Forms[I] is TNamedValuesDialog then
-        begin
-          var Dialog := TNamedValuesDialog(Screen.Forms[I]);
-          Dialog.EditValue(Dialog, 0, 0, TValue.From<string>('RenamedAccent'));
-          Dialog.EditValue(Dialog, 2, 0, TValue.From<string>('#FFAB1234'));
-          Dialog.ModalResult := mrOk;
-        end;
-    end);
-  EditNamedValues;
-  Check((FindValue('RenamedAccent') <> nil) and (FindValue('Accent') = nil) and
-    (FBindings[0].ResourceName = 'RenamedAccent') and
-    (TRectangle(FRoot.Children[0].Children[0]).Fill.Color = $FFAB1234), 'apply resource draft commits rename and propagates value');
-  Check((FTree.Selected = BeforeDraftItem) and (FRoot = BeforeDraftRoot) and
-    (FUndo.Count = BeforeDraftUndo + 1), 'resource apply retains tree and creates one undo operation');
-  Undo(False);
-  Check((FindValue('Accent') <> nil) and (FindValue('RenamedAccent') = nil), 'undo resource draft restores names and bindings');
-  var BeforeInvalidLoad := Snapshot;
-  var InvalidFile := FileName + '.invalid.style';
-  SaveStyle(InvalidFile, TStyleFormat.Indexed);
-  var InvalidRoot := FRoot.Clone(nil);
-  try
-    for var Child in ChildrenOf(InvalidRoot) do
-      if SameText(Child.StyleName, '#designer') then
-        Child.Children[0].TagString := '{invalid json';
-    var InvalidStream := TFileStream.Create(InvalidFile, fmCreate);
-    try
-      TStyleStreaming.SaveToStream(InvalidRoot, InvalidStream, TStyleFormat.Indexed);
-    finally
-      InvalidStream.Free;
-    end;
-  finally
-    InvalidRoot.Free;
-  end;
-  var Rejected := False;
-  try
-    LoadDocument(InvalidFile);
-  except
-    on E: Exception do
-      Rejected := True;
-  end;
-  Check(Rejected, 'invalid embedded project JSON rejected');
-  var AfterInvalidLoad := Snapshot;
-  Check((Length(BeforeInvalidLoad) = Length(AfterInvalidLoad)) and
-    CompareMem(@BeforeInvalidLoad[0], @AfterInvalidLoad[0], Length(BeforeInvalidLoad)), 'failed load preserves document');
-  TFile.Delete(InvalidFile);
-  if TFile.Exists(InvalidFile + '.resources.json') then
-    TFile.Delete(InvalidFile + '.resources.json');
-  SelectObject(FRoot.Children[0]);
-  AddObject('TStyleTag');
-  var TagsVisible := 0;
-  for var Entry in FEntries do
-    if (Entry.Path = 'Tag') or (Entry.Path = 'TagFloat') or (Entry.Path = 'TagString') then
-      Inc(TagsVisible);
-  Check(TagsVisible = 3, 'TStyleTag tag properties available: ' + TagsVisible.ToString + ' on ' + FSelected.ClassName);
-  SetTestProperty('Tag', '17');
-  SetTestProperty('TagFloat', '2.5');
-  SetTestProperty('TagString', 'Style metadata');
-  Check(FSelected.Tag = 17, 'style tag integer');
-  Check(Abs(FSelected.TagFloat - 2.5) < 0.001, 'style tag float');
-  Check(FSelected.TagString = 'Style metadata', 'style tag string');
-  Check((FProperties.FindProperty('Tag') <> nil) and (FProperties.FindProperty('TagFloat') <> nil) and
-    (FProperties.FindProperty('TagString') <> nil), 'custom inspector exposes TStyleTag fields');
-  FPreview.Hide;
-  FDirty := False;
-  ImportDefault;
-  Check(FRoot.ChildrenCount > 50, 'system style unpacked: ' + FRoot.ChildrenCount.ToString);
-  SaveStyle(FileName, TStyleFormat.Indexed);
-  var ResourceCount := FRoot.ChildrenCount;
-  LoadDocument(FileName);
-  Check(FRoot.ChildrenCount = ResourceCount, 'full system style roundtrip');
-  SelectObject(FRoot.Children[100]);
-  FTree.Items[1].IsExpanded := True;
-  FTree.RealignContent;
-  FTree.ViewportPosition := PointF(0, 440);
-  var TreeViewport := FTree.ViewportPosition;
-  Check(TreeViewport.Y > 0, 'tree regression has scrollable content');
-  DuplicateObject;
-  for var I := 1 to 5 do
-  begin
-    Application.ProcessMessages;
-    Sleep(20);
-  end;
-  Check(Abs(FTree.ViewportPosition.Y - TreeViewport.Y) < 1, 'tree viewport preserved after duplicate: ' + TreeViewport.Y.ToString + ' -> ' + FTree.ViewportPosition.Y.ToString + ' wanted=' + FTreeRestoreViewport.Y.ToString + ' pending=' + BoolToStr(FTreeViewportRestorePending, True));
-  Check(FTree.Items[1].IsExpanded, 'tree expanded branches preserved');
-  Undo(False);
-  for var I := 1 to 5 do
-  begin
-    Application.ProcessMessages;
-    Sleep(20);
-  end;
-  Check(Abs(FTree.ViewportPosition.Y - TreeViewport.Y) < 1, 'tree viewport preserved after undo');
-  Check(FTree.Items[1].IsExpanded, 'tree expanded branches preserved after undo');
-  // Virtual groups never change FMX parentage or resource lookup.
-  NewDocument;
-  FSelected := FRoot;
-  AddObject('TLayout');
-  SetTestProperty('StyleName', 'gridstyle');
-  var GridResource := FSelected;
-  FSelected := FRoot;
-  AddObject('TRectangle');
-  SetTestProperty('StyleName', 'textcellstyle');
-  var CellResource := FSelected;
-  AddTestValue('GridAccent', 'Цвет', '#FF247AC4', 'Fill.Color');
-  var GridGroup := CreateStyleGroup('Grid / TStringGrid', '');
-  var GridGroupID := GridGroup.ID;
-  var CellsGroup := CreateStyleGroup('Ячейки', GridGroup.ID);
-  var CellsGroupID := CellsGroup.ID;
-  AssignToGroup(GridResource, nil, GridGroupID);
-  DeferredRefresh(nil);
-  AssignToGroup(CellResource, nil, CellsGroupID);
-  DeferredRefresh(nil);
-  Check((GridResource.Parent = FRoot) and (CellResource.Parent = FRoot), 'grouping preserves top-level style resources');
-  Check((FTree.Count = 1) and (FTree.Items[0].TagObject = GridGroup), 'rootless tree displays group');
-  Check(not CanAssignGroup(nil, GridGroup, CellsGroupID), 'cyclic group move rejected');
-  Check(DesignerLayout(False) <> nil, 'designer metadata layout created automatically');
-  Check((DesignerLayout(False).Children[0] is TStyleTag) and
-    (DesignerLayout(False).Index = FRoot.ChildrenCount - 1), 'designer JSON uses TStyleTag at end of book');
-  for var Item in TreeItems(FTree) do
-    Check((Item.TagObject <> FRoot) and (Item.TagObject <> DesignerLayout(False)), 'root and metadata hidden in tree');
-  SelectObject(GridResource);
-  var DragSource := FTree.Selected;
-  var DragTarget: TTreeViewItem := nil;
-  for var Item in TreeItems(FTree) do
-    if Item.TagObject = CellsGroup then
-      DragTarget := Item;
-  var AllowDrop := True;
-  TreeDragChange(DragSource, DragTarget, AllowDrop);
-  DeferredRefresh(nil);
-  Check(not AllowDrop and (GroupOf(GridResource) = CellsGroupID) and
-    (GridResource.Parent = FRoot), 'drag groups styles without FMX reparenting');
-  AssignToGroup(GridResource, nil, GridGroupID);
-  DeferredRefresh(nil);
-  FSelected := nil;
-  FSelectedGroup := GridGroup;
-  GroupAction(acDelete);
-  Check((FGroups.Count = 1) and (FindGroup(CellsGroupID).ParentID = '') and
-    (StyleResourceCount = 2), 'delete group preserves styles and releases nested groups');
-  Undo(False);
-  Check((FGroups.Count = 2) and (FindGroup(CellsGroupID).ParentID = GridGroupID), 'undo restores nested groups');
-  Undo(True);
-  Check((FGroups.Count = 1) and (StyleResourceCount = 2), 'redo group deletion');
-  Undo(False);
-  CellResource := FRoot.Children[1];
-  SelectObject(CellResource);
-  DuplicateObject;
-  Check(GroupOf(FSelected) = CellsGroupID, 'duplicate resource remains in group');
-  MoveObject(acUp);
-  Check(FSelected.Index = 1, 'resource reorders among siblings of same group');
-  var OutdentedResource := FSelected;
-  MoveObject(acOutdent);
-  DeferredRefresh(nil);
-  Check((GroupOf(OutdentedResource) = GridGroupID) and (OutdentedResource.Parent = FRoot), 'outdent resource moves to parent group');
-  SelectObject(OutdentedResource);
-  GroupAction(acUngroup);
-  DeferredRefresh(nil);
-  Check(GroupOf(OutdentedResource).IsEmpty, 'ungroup resource keeps it in stylebook');
-  Undo(False);
-  Undo(False);
-  Undo(False);
-  Undo(False);
-  CellResource := FRoot.Children[1];
-  SelectObject(CellResource);
-  FProperties.WriteProperty('StyleName', 'textcellstyle2');
-  Check(FTree.Selected.TagString.Contains('textcellstyle2'), 'renamed resource updates persistent tree key without rebuilding');
-  FProperties.WriteProperty('StyleName', 'textcellstyle');
-  DeferredRefresh(nil);
-  SetWorkspaceZoom(1733);
-  FPanOffset := PointF(1234, -5678);
-  FBackgroundMode.ItemIndex := 2;
-  FProperties.SelectPath('Fill.Color');
-  CenterDesign;
-  var GroupFile := FileName + '.groups.style';
-  if TFile.Exists(GroupFile + '.resources.json') then
-    TFile.Delete(GroupFile + '.resources.json');
-  SaveStyle(GroupFile, TStyleFormat.Indexed);
-  Check(not TFile.Exists(GroupFile + '.resources.json'), 'project saved inside one style file');
-  TFile.WriteAllText(GroupFile + '.resources.json', '{stale companion', TEncoding.UTF8);
-  LoadDocument(GroupFile);
-  TFile.Delete(GroupFile + '.resources.json');
-  Check((FGroups.Count = 2) and (FindGroup(CellsGroupID).ParentID = GridGroupID) and
-    (FindGroup(CellsGroupID).Title = 'Ячейки'), 'embedded nested groups roundtrip and override stale companion');
-  Check((FValues.Count = 1) and (FBindings.Count = 1) and
-    (FProperties.FindProperty('Fill.Color').BindingName = 'GridAccent'), 'embedded resources and bindings roundtrip');
-  Check((FZoomPercent = 1733) and (FBackgroundMode.ItemIndex = 2) and
-    (Abs(FPanOffset.X - 1234) < 0.01) and (Abs(FPanOffset.Y + 5678) < 0.01), 'embedded workspace parameters roundtrip');
-  Check((GroupOf(FRoot.Children[0]) = GridGroupID) and
-    (GroupOf(FRoot.Children[1]) = CellsGroupID), 'resource group memberships roundtrip');
-  var GroupBook := TStyleBook.Create(nil);
-  try
-    GroupBook.LoadFromFile(GroupFile);
-    Check((GroupBook.Style.FindStyleResource('gridstyle') <> nil) and
-      (GroupBook.Style.FindStyleResource('textcellstyle') <> nil), 'ordinary TStyleBook resolves grouped resources');
-    var EmbeddedLayout := GroupBook.Style.FindStyleResource('#designer');
-    Check((EmbeddedLayout is TLayout) and (EmbeddedLayout.Children[0] is TStyleTag) and
-      TStyleTag(EmbeddedLayout.Children[0]).TagString.Contains('GridAccent'), 'ordinary stylebook retains embedded JSON');
-  finally
-    GroupBook.Free;
-  end;
-  SelectObject(FRoot.Children[1]);
-  FPanOffset := TPointF.Zero;
-  SetWorkspaceZoom(100);
-  CenterDesign;
-  SaveStyle(GroupFile, TStyleFormat.Text);
-  LoadDocument(GroupFile);
-  Check((FGroups.Count = 2) and (FBindings.Count = 1), 'text style embedded metadata roundtrip');
-  FindValue('GridAccent').Value := '#FFCC4422';
-  ApplyBindings;
-  Changed;
-  Check(TRectangle(FRoot.Children[1]).Fill.Color = $FFCC4422, 'embedded binding applies after reload');
-  Application.ProcessMessages;
-  var GroupPicture := TBitmap.Create(Round(Width), Round(Height));
-  try
-    if GroupPicture.Canvas.BeginScene then
-    begin
-      PaintTo(GroupPicture.Canvas);
-      GroupPicture.Canvas.EndScene;
-    end;
-    GroupPicture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-groups.png'));
-  finally
-    GroupPicture.Free;
-  end;
-  // Migrate the previous v1 companion format on the next save.
-  var LegacyMetadata := TJSONObject.ParseJSONValue(MetadataJSON) as TJSONObject;
-  try
-    LegacyMetadata.RemovePair('version').Free;
-    LegacyMetadata.AddPair('version', TJSONNumber.Create(1));
-    LegacyMetadata.RemovePair('theme').Free;
-    for var Item in LegacyMetadata.GetValue<TJSONArray>('values') do
-    begin
-      TJSONObject(Item).AddPair('value', Item.GetValue<string>('light'));
-      TJSONObject(Item).RemovePair('light').Free;
-      TJSONObject(Item).RemovePair('dark').Free;
-    end;
-    LegacyMetadata.RemovePair('groups').Free;
-    LegacyMetadata.RemovePair('assignments').Free;
-    var LegacyRoot := FRoot.Clone(nil);
-    try
-      for var Child in ChildrenOf(LegacyRoot) do
-        if SameText(Child.StyleName, '#designer') then
-          Child.Free;
-      var LegacyStream := TFileStream.Create(GroupFile, fmCreate);
-      try
-        TStyleStreaming.SaveToStream(LegacyRoot, LegacyStream, TStyleFormat.Indexed);
-      finally
-        LegacyStream.Free;
-      end;
-    finally
-      LegacyRoot.Free;
-    end;
-    TFile.WriteAllText(GroupFile + '.resources.json', LegacyMetadata.ToJSON, TEncoding.UTF8);
-  finally
-    LegacyMetadata.Free;
-  end;
-  LoadDocument(GroupFile);
-  Check((FGroups.Count = 0) and (FBindings.Count = 1) and
-    (FValues.Count = 1), 'legacy companion imported');
-  SaveStyle(GroupFile, TStyleFormat.Indexed);
-  TFile.Delete(GroupFile + '.resources.json');
-  LoadDocument(GroupFile);
-  Check((FBindings.Count = 1) and (FValues.Count = 1), 'legacy metadata migrated into book');
-  TFile.Delete(GroupFile);
-  NewDocument;
-  AddObject('TLayout');
-  var FirstStyle := FSelected;
-  FirstStyle.StyleName := 'firststyle';
-  AddObject('TRectangle');
-  var Moving := TRectangle(FSelected);
-  Moving.Name := 'BoundMoving';
-  var AccentValue := TNamedStyleValue.Create;
-  AccentValue.Name := 'MoveAccent';
-  AccentValue.Kind := 'Цвет';
-  AccentValue.Value := '#FF219DEB';
-  FValues.Add(AccentValue);
-  var MovingBinding := TStyleValueBinding.Create;
-  MovingBinding.TargetName := Moving.Name;
-  MovingBinding.PropertyPath := 'Fill.Color';
-  MovingBinding.ResourceName := AccentValue.Name;
-  FBindings.Add(MovingBinding);
-  SelectObject(FRoot);
-  AddObject('TLayout');
-  var SecondStyle := FSelected;
-  SecondStyle.StyleName := 'secondstyle';
-  RebuildTree;
-  var MovingRow := FTreeItems[Pointer(Moving)];
-  var DropAllowed := True;
-  Check(CanDrop(MovingRow, FTreeItems[Pointer(SecondStyle)]), 'drop between styles allowed');
-  TreeDragChange(MovingRow, FTreeItems[Pointer(SecondStyle)], DropAllowed);
-  DeferredRefresh(nil);
-  Check(not DropAllowed and (Moving.Parent = SecondStyle) and (FTreeItems[Pointer(Moving)] = MovingRow),
-    'drop changes model parent and reuses tree row');
-  Check((FBindings.Count = 1) and (FindNamedObject(MovingBinding.TargetName) = Moving), 'drop retains resource binding');
-  Check(not CanDrop(FTreeItems[Pointer(SecondStyle)], MovingRow), 'drop rejects ancestor cycle');
-  SelectObject(Moving);
-  AddObject('TText');
-  var NestedText := FSelected;
-  TreeDragChange(FTreeItems[Pointer(NestedText)], FTreeItems[Pointer(FirstStyle)], DropAllowed);
-  DeferredRefresh(nil);
-  Check(NestedText.Parent = FirstStyle, 'nested object can move into another style');
-  SelectObject(Moving);
-  AddObject('TFloatAnimation');
-  var AnimationObject := FSelected;
-  Check(not CanDrop(FTreeItems[Pointer(AnimationObject)], nil), 'nonvisual object cannot become root resource');
-  SelectObject(Moving);
-  AddObject('TText');
-  var FrontText := FSelected;
-  SelectObject(AnimationObject);
-  MoveObject(acFront);
-  Check(AnimationObject.Index = AnimationObject.Parent.ChildrenCount - 1, 'BringToFront works for nonvisual objects');
-  MoveObject(acBack);
-  Check(AnimationObject.Index = 0, 'SendToBack works for nonvisual objects');
-  SelectObject(FrontText);
-  MoveObject(acBack);
-  Check(FrontText.Index = 0, 'SendToBack works for visual objects');
-  MoveObject(acFront);
-  Check(FrontText.Index = FrontText.Parent.ChildrenCount - 1, 'BringToFront works for visual objects');
-  SelectObject(Moving);
-  var Display := FDesignRoot;
-  SelectObject(FrontText);
-  Check(FDesignRoot = Display, 'selection inside style preserves display clone');
-  SelectObject(Moving);
-  Check((FTree.ScrollAnimation = TBehaviorBoolean.True) and (FPalette.ScrollAnimation = TBehaviorBoolean.True) and
-    (FProperties.Tree.ScrollAnimation = TBehaviorBoolean.True) and (FZoom.ListBox.ScrollAnimation = TBehaviorBoolean.True),
-    'smooth scrolling enabled in tree palette inspector and dropdown');
-  Check((ComponentIcon(TButton) <> ComponentIcon(TRectangle)) and (ComponentIcon(TRectangle) <> ComponentIcon(TCircle)) and
-    (ComponentIcon(TFloatAnimation) = ComponentIcon(TColorAnimation)) and (FTree.Selected.ImageIndex >= 0),
-    'basic icons distinct and specialized classes share family icons');
-  SetWorkspaceZoom(100);
-  ShowFrame.IsChecked := False;
-  Check(not FRootOutline.Visible, 'overlay hides root frame');
-  ShowFrame.IsChecked := True;
-  ShowDimensions.IsChecked := False;
-  Check(not FSizeBox.Visible and not FRootSizeBox.Visible, 'overlay hides dimension badges');
-  ShowDimensions.IsChecked := True;
-  CenterViewClick(nil);
-  Check((FPanOffset = TPointF.Zero) and FRootOutline.Visible and FSizeBox.Visible and FRootSizeBox.Visible,
-    'overlay centers view and displays root and selection dimensions');
-  Moving.Align := TAlignLayout.None;
-  Moving.SetBounds(23, 17, 117, 63);
-  TControl(FrontText).SetBounds(12, 10, 40, 20);
-  RefreshDesign(True);
-  ShowGuides.IsChecked := True;
-  Check(GuidePixels = 0, 'guides absent outside gesture');
-  var MoveCopy := FResizeCopy;
-  Show;
-  Application.ProcessMessages;
-  var HoverCopy := TControl(FindDesignObject(FDesignRoot, FrontText));
-  var HoverSelection := FSelected;
-  var HoverHistory := FUndo.Count;
-  var HoverState := Snapshot;
-  for var HoverZoom in [100, 175] do
-  begin
-    SetWorkspaceZoom(HoverZoom);
-    var HoverPoint := HoverCopy.LocalToAbsolute(HoverCopy.LocalRect.CenterPoint);
-    var HoverHit := HitDesignObject(HoverPoint);
-    UpdateDesignHover(HoverPoint);
-    Check((HoverHit = HoverCopy) and FHoverOutline.Visible and
-      (FHoverOutline.Position.Point.Distance(FSurface.AbsoluteToLocal(HoverCopy.LocalToAbsolute(TPointF.Zero))) < 0.1) and
-      (Abs(FHoverOutline.Width - HoverCopy.Width * HoverZoom / 100) < 0.1),
-      'hover outline follows frontmost nested element at zoom ' + HoverZoom.ToString);
-    Check(not FHoverOutline.HitTest and (FHoverOutline.Stroke.Color shr 24 = $80) and
-      (HitDesignObject(HoverPoint) = HoverCopy), 'translucent hover outline does not intercept click');
-  end;
-  Check((FSelected = HoverSelection) and (FUndo.Count = HoverHistory) and SameSnapshot(HoverState, Snapshot),
-    'hover preserves selection, document and history');
-  SetWorkspaceZoom(100);
-  var HoverPoint := HoverCopy.LocalToAbsolute(HoverCopy.LocalRect.CenterPoint);
-  UpdateDesignHover(HoverPoint);
-  Picture := TBitmap.Create(Ceil(ClientWidth), Ceil(ClientHeight));
-  try
-    if Picture.Canvas.BeginScene then
-    try
-      PaintTo(Picture.Canvas);
-    finally
-      Picture.Canvas.EndScene;
-    end;
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-hover.png'));
-  finally
-    Picture.Free;
-  end;
-  DesignDown(HoverCopy, TMouseButton.mbRight, [], HoverCopy.Width / 2, HoverCopy.Height / 2);
-  Check((FSelected = FrontText) and not FHoverOutline.Visible, 'click selects hovered element and clears hover outline');
-  SelectObject(Moving);
-  MoveCopy := FResizeCopy;
-  UpdateDesignHover(HoverPoint);
-  MouseLeave;
-  Check(not FHoverOutline.Visible, 'hover outline clears on mouse leave');
-  UpdateDesignHover(HoverPoint);
-  DesignDown(FSurface, TMouseButton.mbMiddle, [ssMiddle], 20, 20);
-  UpdateDesignHover(HoverPoint);
-  Check(not FHoverOutline.Visible, 'hover outline remains hidden while panning');
-  DesignUp(FSurface, TMouseButton.mbMiddle, [], 20, 20);
-  UpdateDesignHover(HoverPoint);
-  WorkspaceDeactivate(nil);
-  Check(not FHoverOutline.Visible, 'hover outline clears on deactivation');
-  DesignDown(MoveCopy, TMouseButton.mbLeft, [], 5, 5);
-  Check(GuidePixels > 200, 'guides render at gesture start without alignment');
-  DesignMove(MoveCopy, [ssLeft], 19, 18);
-  Check(GuidePixels > 200, 'guides render between alignments during movement');
-  Picture := TBitmap.Create(Ceil(ClientWidth), Ceil(ClientHeight));
-  try
-    Picture.Clear($FF202020);
-    if Picture.Canvas.BeginScene then
-    try
-      PaintTo(Picture.Canvas);
-    finally
-      Picture.Canvas.EndScene;
-    end;
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-guides.png'));
-  finally
-    Picture.Free;
-  end;
-  ShowGuides.IsChecked := False;
-  Check(GuidePixels = 0, 'overlay disables guides during gesture');
-  ShowGuides.IsChecked := True;
-  DesignUp(MoveCopy, TMouseButton.mbLeft, [], 5, 5);
-  Check(GuidePixels = 0, 'guides clear after movement');
-  Moving.SetBounds(0, 0, 120, 60);
-  RefreshDesign(True);
-  DesignDown(FResizeCopy, TMouseButton.mbLeft, [], 5, 5);
-  Check(GuidePixels(True) > 100, 'aligned guides use highlighted color');
-  DesignUp(FDragObject, TMouseButton.mbLeft, [], 5, 5);
-  SelectObject(SecondStyle);
-  for var TestZoom in [50, 175, 2000] do
-  begin
-    SetWorkspaceZoom(TestZoom);
-    FPanOffset := PointF(15, -10);
-    CenterDesign;
-    DesignDown(FResizeNW, TMouseButton.mbLeft, [], 4.5, 4.5);
-    Check(GuidePixels > 200, 'root resize guides at zoom ' + TestZoom.ToString);
-    DesignUp(FResizeNW, TMouseButton.mbLeft, [], 4.5, 4.5);
-    Check(GuidePixels = 0, 'root guides clear at zoom ' + TestZoom.ToString);
-  end;
-  SetWorkspaceZoom(100);
-  CenterViewClick(nil);
-  SelectObject(Moving);
-  var ResizeHandles: array[0..3] of TRectangle;
-  ResizeHandles[0] := FResizeNW;
-  ResizeHandles[1] := FResizeNE;
-  ResizeHandles[2] := FResizeSW;
-  ResizeHandles[3] := FResizeHandle;
-  for var Corner := 0 to 3 do
-  begin
-    Moving.Align := TAlignLayout.None;
-    Moving.SetBounds(10, 10, 120, 60);
-    RefreshDesign(True);
-    var Handle := ResizeHandles[Corner];
-    var HistoryCount := FUndo.Count;
-    DesignDown(Handle, TMouseButton.mbLeft, [], 4.5, 4.5);
-    Check(GuidePixels > 200, 'guides render for every resize corner');
-    Check((Length(FDragSnapshot) = 0) and (FUndo.Count = HistoryCount), 'resize click defers snapshot');
-    DesignMove(Handle, [ssLeft], 16.5, 12.5);
-    var ExpectedWidth: Single := 132;
-    var ExpectedHeight: Single := 68;
-    if Corner in [0, 2] then
-      ExpectedWidth := 108;
-    if Corner in [0, 1] then
-      ExpectedHeight := 52;
-    Check(SameValue(Moving.Width, ExpectedWidth, 0.01) and SameValue(Moving.Height, ExpectedHeight, 0.01),
-      'corner resize updates dimensions ' + Corner.ToString);
-    DesignUp(Handle, TMouseButton.mbLeft, [], 4.5, 4.5);
-    Check(FUndo.Count = HistoryCount + 1, 'resize stores one history entry');
-  end;
-  Moving.RotationAngle := 30;
-  Moving.Scale.Point := PointF(1.5, 1.25);
-  Moving.SetBounds(10, 10, 120, 60);
-  RefreshDesign(True);
-  var OppositeAnchor := FResizeCopy.LocalToAbsolute(PointF(0, 0));
-  var ResizeMouse := FResizeHandle.LocalToAbsolute(PointF(4.5, 4.5));
-  var WorldDelta := PointF(12, 8) * FResizeCopy.AbsoluteMatrix - TPointF.Zero * FResizeCopy.AbsoluteMatrix;
-  DesignDown(FResizeHandle, TMouseButton.mbLeft, [], 4.5, 4.5);
-  var HandlePoint := FResizeHandle.AbsoluteToLocal(ResizeMouse + WorldDelta);
-  DesignMove(FResizeHandle, [ssLeft], HandlePoint.X, HandlePoint.Y);
-  DesignUp(FResizeHandle, TMouseButton.mbLeft, [], 4.5, 4.5);
-  Check(SameValue(Moving.Width, 132, 0.01) and SameValue(Moving.Height, 68, 0.01) and
-    (FResizeCopy.LocalToAbsolute(PointF(0, 0)).Distance(OppositeAnchor) < 0.1),
-    'rotated scaled resize preserves opposite corner');
-  Moving.RotationAngle := 0;
-  Moving.Scale.Point := PointF(1, 1);
-  Moving.Align := TAlignLayout.Client;
-  RefreshDesign(True);
-  Check(FResizeNW.Visible and FResizeNE.Visible and FResizeSW.Visible and FResizeHandle.Visible,
-    'all corners available for aligned controls');
-  DesignDown(FResizeHandle, TMouseButton.mbLeft, [], 4.5, 4.5);
-  DesignMove(FResizeHandle, [ssLeft], 16.5, 12.5);
-  DesignUp(FResizeHandle, TMouseButton.mbLeft, [], 4.5, 4.5);
-  Check(Moving.Align = TAlignLayout.None, 'aligned resize switches to explicit geometry');
-  Undo(False);
-  Moving := TRectangle(FindNamedObject('BoundMoving'));
-  Check((Moving <> nil) and (Moving.Align = TAlignLayout.Client), 'undo restores alignment and binding target');
-  SelectObject(Moving);
-  ShowFrame.IsChecked := False;
-  ShowGuides.IsChecked := False;
-  ShowDimensions.IsChecked := False;
-  SaveStyle(GroupFile, TStyleFormat.Indexed);
-  LoadDocument(GroupFile);
-  Check(not ShowFrame.IsChecked and not ShowGuides.IsChecked and not ShowDimensions.IsChecked,
-    'overlay settings persist in designer metadata');
-  ShowFrame.IsChecked := True;
-  ShowGuides.IsChecked := True;
-  ShowDimensions.IsChecked := True;
-  SelectObject(FindNamedObject('BoundMoving'));
-  Snapshot;
-  TFile.Delete(GroupFile);
-  Moving := TRectangle(FSelected);
-  Moving.Align := TAlignLayout.None;
-  Moving.SetBounds(30, 25, 90, 40);
-  var Container := TControl(Moving.Parent);
-  Container.Width := 210;
-  Container.Height := 110;
-  RefreshDesign(True);
-  var GroupForDrop := CreateStyleGroup('Composite', '');
-  var PromotionID := GroupForDrop.ID;
-  Moving.StyleName := 'firststyle';
-  RebuildTree;
-  TreeDragChange(FTreeItems[Pointer(Moving)], FTreeItems[Pointer(GroupForDrop)], DropAllowed);
-  DeferredRefresh(nil);
-  Check((Moving.Parent = FRoot) and (GroupOf(Moving) = PromotionID) and (Moving.StyleName <> 'firststyle'),
-    'nested visual drop into group promotes unique style resource');
-  Undo(False);
-  Moving := TRectangle(FindNamedObject('BoundMoving'));
-  Check((Moving <> nil) and (Moving.Parent <> FRoot) and (FBindings.Count = 1), 'undo promotion restores hierarchy and binding');
-  SelectObject(Moving);
-  ClearHistory;
-  WorkspaceSettingsClick(WorkspaceSettingsButton);
-  Check(CanvasOverlay.Visible and (ShowFrame.Width > 200) and (CenterView.Height >= 32),
-    'workspace settings opens with full-width options and standard button height');
-  CaptureDialog(Self, 'selftest-workspace-tools.png');
-  var EscapeKey: Word := vkEscape;
-  var EscapeChar: WideChar := #0;
-  FormKeys(Self, EscapeKey, EscapeChar, []);
-  Check(not CanvasOverlay.Visible and (EscapeKey = 0), 'Escape dismisses workspace settings');
-  WorkspaceSettingsClick(WorkspaceSettingsButton);
-  DesignDown(FCanvas, TMouseButton.mbLeft, [], 0, 0);
-  Check(not CanvasOverlay.Visible, 'clicking the workspace dismisses view settings');
-  Show;
-  WorkspaceSettingsClick(WorkspaceSettingsButton);
-  FPropertySearch.SetFocus;
-  Check(not CanvasOverlay.Visible, 'moving keyboard focus outside dismisses view settings');
-  NewDocument;
-  AddObject('TImage');
-  var LinkAtlas := TImage(FSelected);
-  LinkAtlas.StyleName := 'atlas.bmp';
-  LinkAtlas.Bitmap.SetSize(96, 96);
-  LinkAtlas.Bitmap.Clear($FFEEEEEE);
-  Check(LinkAtlas.Bitmap.Canvas.BeginScene, 'bitmap links atlas canvas available');
-  try
-    LinkAtlas.Bitmap.Canvas.Fill.Color := $FF0078D4;
-    LinkAtlas.Bitmap.Canvas.FillRect(RectF(8, 8, 88, 88), 0, 0, AllCorners, 1);
-    LinkAtlas.Bitmap.Canvas.Fill.Color := $FFFFFFFF;
-    LinkAtlas.Bitmap.Canvas.FillRect(RectF(16, 16, 80, 80), 0, 0, AllCorners, 1);
-  finally
-    LinkAtlas.Bitmap.Canvas.EndScene;
-  end;
-  var LinkAtlas2 := LinkAtlas.MultiResBitmap.Add;
-  LinkAtlas2.Scale := 2;
-  LinkAtlas2.Bitmap.Assign(LinkAtlas.Bitmap);
-  LinkAtlas2.Bitmap.Resize(192, 192);
-  SelectObject(FRoot);
-  AddObject('TTintedButtonStyleObject');
-  var BitmapStyle := TButtonStyleObject(FSelected);
-  BitmapStyle.Name := 'BitmapLinkSubject';
-  BitmapStyle.StyleName := 'bitmaplinkstyle';
-  BitmapStyle.SourceLookup := LinkAtlas.StyleName;
-  var AtlasLink := TBitmapLink(BitmapStyle.NormalLink.Add);
-  AtlasLink.SourceRect.Rect := RectF(8, 8, 88, 88);
-  AtlasLink.CapInsets.Rect := RectF(8, 8, 8, 8);
-  BitmapStyle.HotLink.Assign(BitmapStyle.NormalLink);
-  var NestedAtlas := TImage.Create(nil);
-  NestedAtlas.StyleName := 'nested.bmp';
-  NestedAtlas.Parent := BitmapStyle;
-  SetModelDesigning(FRoot);
-  Changed;
-  ClearHistory;
-  var LinkBackground := TBrush.Create(TBrushKind.Solid, $FFFFFFFF);
-  ConfigureWorkspaceBackground(LinkBackground);
-  var LinksDialog := TBitmapLinksEditorForm.CreateEditor(Self, BitmapStyle, FRoot,
-    BitmapStyle.NormalLink, 'NormalLink', LinkBackground);
-  try
-    Check((LinksDialog.ImagesList.Count = 1) and (LinksDialog.ImagesList.Items[0] = 'atlas.bmp') and
-      (LinksDialog.SourceLookupEdit.Items.IndexOf('atlas.bmp') >= 0) and
-      (LinksDialog.SourceLookupEdit.Items.IndexOf('nested.bmp') < 0), 'bitmap links images and combo list only root TImage');
-    Check((LinksDialog.LinksList.Items.IndexOf('NormalLink') >= 0) and
-      (LinksDialog.LinksList.Items.IndexOf('HotLink') >= 0) and
-      (LinksDialog.LinksList.Items.IndexOf('NormalTint.Mask') >= 0), 'bitmap links collects state and nested tint links');
-    Check((LinksDialog.CurrentLink.SourceRect.Rect = AtlasLink.SourceRect.Rect) and
-      (LinksDialog.ZoomPercent = 100) and (LinksDialog.PanOffset = TPointF.Zero) and
-      (LinksDialog.ViewBackground.Fill.Kind = LinkBackground.Kind), 'bitmap links loads draft and workspace defaults');
-    Check(not ApplyBitmapLinks(LinksDialog) and (FUndo.Count = 0), 'unchanged bitmap links dialog creates no undo');
-    var LinkAnchor := PointF(LinksDialog.View.Width * 0.3, LinksDialog.View.Height * 0.4);
-    var LinkAnchorPixel := LinksDialog.ViewToImage(LinkAnchor);
-    LinksDialog.ZoomAt(LinkAnchor, 60);
-    Check(LinksDialog.ZoomPercent = 100, 'bitmap links wheel accumulates partial delta');
-    LinksDialog.ZoomAt(LinkAnchor, 60);
-    Check((LinksDialog.ZoomPercent = 110) and (LinksDialog.ImageToView(LinkAnchorPixel).Distance(LinkAnchor) < 0.1),
-      'bitmap links wheel zoom preserves pixel under cursor');
-    LinksDialog.ViewDown(LinksDialog.View, TMouseButton.mbMiddle, [ssMiddle], 20, 20);
-    LinksDialog.ViewMove(LinksDialog.View, [ssMiddle], 1220, -880);
-    LinksDialog.ViewUp(LinksDialog.View, TMouseButton.mbMiddle, [], 1220, -880);
-    Check((LinksDialog.PanOffset.X > 1100) and (LinksDialog.PanOffset.Y < -800), 'bitmap links middle mouse pans beyond viewport');
-    LinksDialog.CenterClick(nil);
-    LinksDialog.ZoomCombo.ItemIndex := LinksDialog.ZoomCombo.Items.IndexOf('400%');
-    var LinkDragStart := LinksDialog.ImageToView(PointF(16, 48));
-    LinksDialog.ViewDown(LinksDialog.View, TMouseButton.mbLeft, [ssLeft], LinkDragStart.X, LinkDragStart.Y);
-    LinksDialog.ViewMove(LinksDialog.View, [ssLeft], LinkDragStart.X + 5.2, LinkDragStart.Y);
-    LinksDialog.ViewUp(LinksDialog.View, TMouseButton.mbLeft, [], LinkDragStart.X + 5.2, LinkDragStart.Y);
-    Check((LinksDialog.CurrentLink.CapInsets.Left = 9) and (AtlasLink.CapInsets.Left = 8),
-      'bitmap links cap drag snaps to one source pixel and leaves original untouched');
-    LinkDragStart := LinksDialog.ImageToView(PointF(88, 88));
-    LinksDialog.ViewDown(LinksDialog.View, TMouseButton.mbLeft, [ssLeft], LinkDragStart.X, LinkDragStart.Y);
-    LinksDialog.ViewMove(LinksDialog.View, [ssLeft], LinkDragStart.X + 9.2, LinkDragStart.Y + 5.2);
-    LinksDialog.ViewUp(LinksDialog.View, TMouseButton.mbLeft, [], LinkDragStart.X + 9.2, LinkDragStart.Y + 5.2);
-    Check((LinksDialog.CurrentLink.SourceRect.Right = 90) and (LinksDialog.CurrentLink.SourceRect.Bottom = 89),
-      'bitmap links outer drag snaps to one source pixel');
-    LinksDialog.ResolutionAction(LinksDialog.AddResolutionButton);
-    Check((LinksDialog.CurrentLink.Scale = 2) and (LinksDialog.CurrentDraft.Value.Count = 2) and
-      (LinksDialog.CurrentLink.SourceRect.Right = 180), 'bitmap links adds matching image scale and scales coordinates');
-    var LinkError: string;
-    LinksDialog.CurrentLink.Scale := 1;
-    Check(not LinksDialog.Validate(LinkError), 'bitmap links rejects duplicate resolution scales');
-    LinksDialog.CurrentLink.Scale := 2;
-    LinksDialog.SetCapInsets(RectF(200, 200, 200, 200));
-    Check((LinksDialog.CurrentLink.CapInsets.Left + LinksDialog.CurrentLink.CapInsets.Right <= LinksDialog.CurrentLink.SourceRect.Rect.Width) and
-      (LinksDialog.CurrentLink.CapInsets.Top + LinksDialog.CurrentLink.CapInsets.Bottom <= LinksDialog.CurrentLink.SourceRect.Rect.Height),
-      'bitmap links constrains crossing cap insets');
-    LinksDialog.ResolutionAction(LinksDialog.DeleteResolutionButton);
-    Check(LinksDialog.CurrentDraft.Value.Count = 1, 'bitmap links deletes resolution in draft');
-    LinksDialog.ResolutionAction(LinksDialog.AddResolutionButton);
-    LinksDialog.ResolutionsList.ItemIndex := 0;
-    LinksDialog.LinksList.ItemIndex := LinksDialog.LinksList.Items.IndexOf('HotLink');
-    LinksDialog.SetSourceRect(RectF(10, 10, 86, 86));
-    LinksDialog.LinksList.ItemIndex := LinksDialog.LinksList.Items.IndexOf('NormalLink');
-    Check((LinksDialog.CurrentLink.SourceRect.Right = 90) and
-      (BitmapStyle.HotLink.Links[0].SourceRect.Left = 8), 'bitmap links switching states preserves independent drafts');
-    LinksDialog.SourceLookupEdit.Text := 'future-atlas.bmp';
-    Check(LinksDialog.SourceLookupEdit.Text = 'future-atlas.bmp', 'bitmap links combo allows custom SourceLookup');
-    LinksDialog.SourceLookupEdit.Text := 'atlas.bmp';
-    LinksDialog.ZoomCombo.ItemIndex := LinksDialog.ZoomCombo.Items.IndexOf('400%');
-    LinksDialog.CenterClick(nil);
-    CaptureDialog(LinksDialog, 'selftest-bitmaplinks.png');
-    Check((LinksDialog.ApplyButton.Position.X < LinksDialog.CancelButton.Position.X) and
-      (LinksDialog.View.Width > 300) and (LinksDialog.ScaleEdit.Width > 200), 'bitmap links WinUI layout keeps actions and workspace usable');
-    Check(ApplyBitmapLinks(LinksDialog) and (FUndo.Count = 1) and (BitmapStyle.NormalLink.Count = 2) and
-      (BitmapStyle.NormalLink.Links[1].Scale = 2) and (BitmapStyle.NormalLink.Links[0].SourceRect.Right = 90) and
-      (BitmapStyle.HotLink.Links[0].SourceRect.Left = 10), 'bitmap links applies all drafts as one undo operation');
-  finally
-    LinksDialog.Free;
-    LinkBackground.Free;
-  end;
-  Undo(False);
-  BitmapStyle := TButtonStyleObject(FindStyleRoot('bitmaplinkstyle'));
-  Check((BitmapStyle.NormalLink.Count = 1) and (BitmapStyle.NormalLink.Links[0].SourceRect.Right = 88) and (BitmapStyle.HotLink.Links[0].SourceRect.Left = 8),
-    'undo restores bitmap link geometry across states');
-  Undo(True);
-  BitmapStyle := TButtonStyleObject(FindStyleRoot('bitmaplinkstyle'));
-  Check((BitmapStyle.NormalLink.Count = 2) and (BitmapStyle.NormalLink.Links[0].SourceRect.Right = 90) and (BitmapStyle.HotLink.Links[0].SourceRect.Left = 10),
-    'redo restores bitmap link geometry across states');
-  SelectObject(BitmapStyle);
-  var CancelLinkState := Snapshot;
-  var CancelLinkHistory := FUndo.Count;
-  LinksDialog := TBitmapLinksEditorForm.CreateEditor(Self, BitmapStyle, FRoot, BitmapStyle.NormalLink, 'NormalLink', nil);
-  LinksDialog.SetSourceRect(RectF(0, 0, 32, 32));
-  LinksDialog.SourceLookupEdit.Text := 'unused.bmp';
-  LinksDialog.Free;
-  Check(SameSnapshot(CancelLinkState, Snapshot) and (FUndo.Count = CancelLinkHistory), 'bitmap links cancel preserves complete document and history');
-  LinksDialog := TBitmapLinksEditorForm.CreateEditor(Self, BitmapStyle, FRoot, BitmapStyle.NormalLink, 'NormalLink', nil);
-  try
-    LinksDialog.SourceLookupEdit.Text := 'future-atlas.bmp';
-    Check(ApplyBitmapLinks(LinksDialog) and (BitmapStyle.SourceLookup = 'future-atlas.bmp') and
-      (FUndo.Count = CancelLinkHistory + 1), 'bitmap links commits custom SourceLookup as one undo');
-  finally
-    LinksDialog.Free;
-  end;
-  Undo(False);
-  BitmapStyle := TButtonStyleObject(FindStyleRoot('bitmaplinkstyle'));
-  Check((BitmapStyle.SourceLookup = 'atlas.bmp') and (BitmapStyle.NormalLink.Count = 2), 'bitmap links undo restores SourceLookup and preserves resolutions');
-  NewDocument;
-  AddObject('TLayout');
-  var GlyphResource := FSelected;
-  TControl(GlyphResource).SetBounds(0, 0, 160, 100);
-  var EmptyGlyph := TGlyph.Create(nil);
-  EmptyGlyph.StyleName := 'glyph';
-  EmptyGlyph.SetBounds(40, 20, 64, 48);
-  EmptyGlyph.Padding.Rect := RectF(8, 4, 12, 6);
-  EmptyGlyph.Parent := GlyphResource;
-  var GlyphFill := TFillRGBEffect.Create(nil);
-  GlyphFill.StyleName := 'glyphfill';
-  GlyphFill.Color := $FFFF0000;
-  GlyphFill.Enabled := False;
-  GlyphFill.Parent := EmptyGlyph;
-  SetModelDesigning(GlyphResource);
-  Changed;
-  SelectObject(GlyphResource);
-  Show;
-  Application.ProcessMessages;
-  var GlyphCopy := TGlyph(FindDesignObject(FDesignRoot, EmptyGlyph));
-  Check((GlyphCopy <> nil) and GlyphCopy.Visible and GlyphCopy.HitTest and not GlyphCopy.AutoHide and
-    not GlyphCopy.BitmapExists and Assigned(GlyphCopy.OnPaint) and (GlyphCopy.ChildrenCount = 1),
-    'empty glyph has visible selectable workspace placeholder without extra children');
-  var GlyphState := Snapshot;
-  var GlyphHistory := FUndo.Count;
-  var GlyphPoint := GlyphCopy.LocalToAbsolute(PointF(30, 23));
-  UpdateDesignHover(GlyphPoint);
-  Check(FHoverOutline.Visible and (Abs(FHoverOutline.Width - GlyphCopy.Width) < 0.1), 'empty glyph exposes hover outline');
-  MouseMove([], GlyphPoint.X, GlyphPoint.Y);
-  MouseDown(TMouseButton.mbLeft, [], GlyphPoint.X, GlyphPoint.Y);
-  MouseUp(TMouseButton.mbLeft, [], GlyphPoint.X, GlyphPoint.Y);
-  Check((FSelected = EmptyGlyph) and (FResizeCopy = GlyphCopy) and (FProperties.InspectedObject = EmptyGlyph),
-    'native workspace click selects empty glyph and inspects model');
-  Check(SameSnapshot(GlyphState, Snapshot) and (FUndo.Count = GlyphHistory) and
-    EmptyGlyph.AutoHide and not EmptyGlyph.HitTest and (EmptyGlyph.Images = nil) and (EmptyGlyph.ImageIndex = -1),
-    'glyph placeholder and selection preserve document properties and history');
-  var GlyphPixels: TBitmapData;
-  Picture := GlyphCopy.MakeScreenshot;
-  try
-    Check(Picture.Map(TMapAccess.Read, GlyphPixels), 'glyph placeholder bitmap readable');
-    try
-      var CirclePixel := TAlphaColorRec(GlyphPixels.GetPixel(30, 23));
-      Check((CirclePixel.A > 220) and (Abs(Integer(CirclePixel.R) - $80) < 3) and
-        (TAlphaColorRec(GlyphPixels.GetPixel(4, 4)).A = 0), 'glyph placeholder is padded circle on transparent background');
-    finally
-      Picture.Unmap(GlyphPixels);
-    end;
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-glyph-circle.png'));
-  finally
-    Picture.Free;
-  end;
-  var GlyphFillCopy := TFillRGBEffect(FindDesignObject(FDesignRoot, GlyphFill));
-  GlyphFillCopy.Enabled := True;
-  Picture := GlyphCopy.MakeScreenshot;
-  try
-    Check(Picture.Map(TMapAccess.Read, GlyphPixels), 'glyph effect bitmap readable');
-    try
-      var EffectPixel := TAlphaColorRec(GlyphPixels.GetPixel(30, 23));
-      Check((EffectPixel.A > 220) and (EffectPixel.R > 220) and (EffectPixel.G < 30) and (EffectPixel.B < 30) and
-        (TAlphaColorRec(GlyphPixels.GetPixel(4, 4)).A = 0), 'glyph effects process placeholder and preserve circle alpha');
-    finally
-      Picture.Unmap(GlyphPixels);
-    end;
-    Picture.SaveToFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-glyph-effect.png'));
-  finally
-    Picture.Free;
-  end;
-  FProperties.WriteProperty('AutoHide', 'False');
-  FProperties.WriteProperty('Visible', 'False');
-  FProperties.WriteProperty('HitTest', 'False');
-  FProperties.WriteProperty('Enabled', 'False');
-  GlyphCopy := TGlyph(FindDesignObject(FDesignRoot, EmptyGlyph));
-  Check(not EmptyGlyph.AutoHide and not EmptyGlyph.Visible and not EmptyGlyph.HitTest and not EmptyGlyph.Enabled and
-    GlyphCopy.Visible and GlyphCopy.HitTest and GlyphCopy.Enabled and not GlyphCopy.AutoHide,
-    'glyph property edits preserve editor visibility and hit testing without overriding model');
-  FProperties.WriteProperty('AutoHide', 'True');
-  RefreshDesign(True);
-  GlyphCopy := TGlyph(FindDesignObject(FDesignRoot, EmptyGlyph));
-  SelectObject(GlyphResource);
-  GlyphPoint := GlyphCopy.LocalToAbsolute(PointF(30, 23));
-  MouseMove([], GlyphPoint.X, GlyphPoint.Y);
-  MouseDown(TMouseButton.mbLeft, [], GlyphPoint.X, GlyphPoint.Y);
-  MouseUp(TMouseButton.mbLeft, [], GlyphPoint.X, GlyphPoint.Y);
-  Check((FSelected = EmptyGlyph) and EmptyGlyph.AutoHide and not EmptyGlyph.Enabled,
-    'glyph remains selectable after rebuild with AutoHide and disabled model');
-  NewDocument;
-  AddObject('TLayout');
-  FSelected.StyleName := 'textplaceholderstyle';
-  var TextResource := FSelected;
-  var EmptyStyleText := TText.Create(nil);
-  EmptyStyleText.StyleName := 'emptytext';
-  EmptyStyleText.Text := '';
-  EmptyStyleText.Hint := '';
-  EmptyStyleText.Parent := TextResource;
-  var DefaultStyleText := TText.Create(nil);
-  DefaultStyleText.StyleName := 'defaulttext';
-  DefaultStyleText.Text := 'Text';
-  DefaultStyleText.Parent := TextResource;
-  var AuthoredStyleText := TText.Create(nil);
-  AuthoredStyleText.StyleName := 'authoredtext';
-  AuthoredStyleText.Text := 'Custom user text';
-  AuthoredStyleText.Parent := TextResource;
-  var LowerStyleText := TText.Create(nil);
-  LowerStyleText.StyleName := 'lowertext';
-  LowerStyleText.Text := 'text';
-  LowerStyleText.Parent := TextResource;
-  var SpaceStyleText := TText.Create(nil);
-  SpaceStyleText.StyleName := 'spacetext';
-  SpaceStyleText.Text := 'Text ';
-  SpaceStyleText.Parent := TextResource;
-  var TextTag := TStyleTag.Create(nil);
-  TextTag.StyleName := 'texttag';
-  TextTag.TagString := 'Text';
-  TextTag.Parent := TextResource;
-  var EditText := TEdit.Create(nil);
-  EditText.StyleName := 'edittext';
-  EditText.Text := '';
-  EditText.TextPrompt := '';
-  EditText.Parent := TextResource;
-  var LiteralValue := TNamedStyleValue.Create;
-  LiteralValue.Name := 'LiteralTextResource';
-  LiteralValue.Kind := 'Текст';
-  LiteralValue.Value := 'Text';
-  FValues.Add(LiteralValue);
-  SetModelDesigning(TextResource);
-  FSelected := EmptyStyleText;
-  Changed;
-  var TextNode := FProperties.FindProperty('Text');
-  Check((FProperties.ValueText(TextNode) = 'Text') and (TEdit(TextNode.Editor).Text = 'Text') and
-    (TText(FResizeCopy).Text = 'Text') and EmptyStyleText.Text.IsEmpty, 'empty Text has editor-only placeholder');
-  var TextUndoCount := FUndo.Count;
-  TEdit(TextNode.Editor).OnExit(TextNode.Editor);
-  Check(FUndo.Count = TextUndoCount, 'leaving default Text untouched creates no history');
-  FProperties.WriteProperty('Text', 'Changed caption');
-  DeferredRefresh(nil);
-  Check((EmptyStyleText.Text = 'Changed caption') and (TText(FResizeCopy).Text = 'Changed caption'),
-    'authored Text mirrors into workspace');
-  Undo(False);
-  TextResource := FRoot.Children[0];
-  EmptyStyleText := TText(TextResource.FindStyleResource('emptytext'));
-  SelectObject(EmptyStyleText);
-  Check(EmptyStyleText.Text.IsEmpty and (TText(FResizeCopy).Text = 'Text'), 'undo restores empty Text with placeholder');
-  FProperties.WriteProperty('Text', 'Changed caption');
-  FProperties.WriteProperty('Text', '');
-  DeferredRefresh(nil);
-  Check(EmptyStyleText.Text.IsEmpty and (TText(FResizeCopy).Text = 'Text') and
-    (FProperties.ValueText(FProperties.FindProperty('Text')) = 'Text'), 'clearing Text restores placeholder without rebuilding');
-  SelectObject(TextResource.FindStyleResource('edittext'));
-  Check((FProperties.ValueText(FProperties.FindProperty('Text')) = 'Text') and
-    FProperties.ValueText(FProperties.FindProperty('TextPrompt')).IsEmpty and
-    TEdit(FSelected).TextPrompt.IsEmpty, 'other text properties stay empty');
-  TEdit(FSelected).TextPrompt := 'Text';
-  RefreshDesign(True);
-  var TextFile := FileName + '.placeholder.style';
-  DefaultStyleText := TText(TextResource.FindStyleResource('defaulttext'));
-  for var TextFormat in [TStyleFormat.Text, TStyleFormat.Binary, TStyleFormat.Indexed] do
-  begin
-    var BeforeTextSave := Snapshot;
-    var BeforeTextHistory := FUndo.Count;
-    var BeforeTextDisplay := FDesignRoot;
-    SaveStyle(TextFile, TextFormat);
-    var AfterTextSave := Snapshot;
-    Check((Length(BeforeTextSave) = Length(AfterTextSave)) and
-      CompareMem(@BeforeTextSave[0], @AfterTextSave[0], Length(BeforeTextSave)) and
-      (FUndo.Count = BeforeTextHistory) and (FDesignRoot = BeforeTextDisplay) and (DefaultStyleText.Text = 'Text'),
-      'save preserves editor values and history ' + Ord(TextFormat).ToString);
-    var SavedTextRoot := TStyleStreaming.LoadFromFile(TextFile);
-    try
-      UnpackStyleBinaries(SavedTextRoot);
-      var SavedResource := SavedTextRoot.FindStyleResource('textplaceholderstyle');
-      Check(TText(SavedResource.FindStyleResource('emptytext')).Text.IsEmpty and
-        TText(SavedResource.FindStyleResource('defaulttext')).Text.IsEmpty and
-        TEdit(SavedResource.FindStyleResource('edittext')).Text.IsEmpty,
-        'empty and default Text excluded from style file ' + Ord(TextFormat).ToString);
-      Check((TText(SavedResource.FindStyleResource('authoredtext')).Text = 'Custom user text') and
-        (TText(SavedResource.FindStyleResource('lowertext')).Text = 'text') and
-        (TText(SavedResource.FindStyleResource('spacetext')).Text = 'Text ') and
-        (TStyleTag(SavedResource.FindStyleResource('texttag')).TagString = 'Text') and
-        (TEdit(SavedResource.FindStyleResource('edittext')).TextPrompt = 'Text'),
-        'other text values survive style file ' + Ord(TextFormat).ToString);
-      var Designer := SavedTextRoot.FindStyleResource('#designer');
-      var TextJSON := TJSONObject.ParseJSONValue(Designer.FindStyleResource('project').TagString);
-      try
-        Check((TextJSON.GetValue<TJSONArray>('values').Items[0].GetValue<string>('light') = 'Text') and
-          (TextJSON.GetValue<TJSONArray>('values').Items[0].GetValue<string>('dark') = 'Text'),
-          'named text resources remain unchanged');
-      finally
-        TextJSON.Free;
-      end;
-    finally
-      SavedTextRoot.Free;
-    end;
-  end;
-  var RejectedStream := TRejectingStyleStream.Create;
-  var RejectedWrite := False;
-  try
-    try
-      WriteStyleStream(RejectedStream, TStyleFormat.Binary);
-    except
-      on E: EWriteError do
-        RejectedWrite := True;
-    end;
-  finally
-    RejectedStream.Free;
-  end;
-  Check(RejectedWrite and (DefaultStyleText.Text = 'Text'), 'failed serialization restores editor placeholder values');
-  LoadDocument(TextFile);
-  TextResource := FRoot.Children[0];
-  SelectObject(TextResource.FindStyleResource('defaulttext'));
-  Check((TText(FSelected).Text = '') and (TText(FResizeCopy).Text = 'Text') and
-    (FProperties.ValueText(FProperties.FindProperty('Text')) = 'Text'), 'reopened style displays omitted Text placeholder');
-  TFile.Delete(TextFile);
-  NewDocument;
-  AddObject('TMenuBar');
-  AddObject('TMenuItem');
-  var MenuRoot := TMenuItem(FSelected);
-  MenuRoot.StyleName := 'menutest';
-  var MenuContent := MenuRoot.Children[0];
-  Check(not MenuContent.Stored and not FTreeItems.ContainsKey(Pointer(MenuContent)) and
-    (FTreeItems[Pointer(MenuRoot)].Count = 0), 'empty menu internal Content hidden');
-  SelectObject(MenuContent);
-  Check((FSelected = MenuRoot) and (FProperties.InspectedObject = MenuRoot), 'internal object cannot be inspected');
-  AddObject('TMenuItem');
-  var MenuChild := TMenuItem(FSelected);
-  MenuChild.StyleName := 'childmenu';
-  Check((MenuChild.Parent = MenuContent) and (FTreeItems[Pointer(MenuChild)].ParentItem = FTreeItems[Pointer(MenuRoot)]),
-    'real menu child visible directly under menu');
-  var MenuRootCopy := EditableChildren(FDesignRoot)[0];
-  Check((EditableChildren(MenuRootCopy)[0].TagObject = MenuChild) and
-    (MenuRootCopy.Children[0].TagObject = nil) and not TControl(MenuRootCopy.Children[0]).HitTest,
-    'workspace binds real menu child and excludes internal container');
-  Check(not CanDrop(FTreeItems[Pointer(MenuChild)], FTreeItems[Pointer(MenuRoot)]), 'drop onto logical current parent is no-op');
-  AddObject('TMenuItem');
-  var MenuGrandchild := FSelected;
-  MenuGrandchild.StyleName := 'grandchild';
-  MoveObject(acOutdent);
-  Check((EditableParent(MenuGrandchild) = MenuRoot) and
-    (FTreeItems[Pointer(MenuGrandchild)].ParentItem = FTreeItems[Pointer(MenuRoot)]), 'outdent skips internal Content');
-  DeleteObject;
-  Check(FSelected = MenuRoot, 'deletion selects editable parent instead of Content');
-  State := Snapshot;
-  Restore(State);
-  MenuRoot := TMenuItem(EditableChildren(FRoot.Children[0])[0]);
-  MenuChild := TMenuItem(EditableChildren(MenuRoot)[0]);
-  Check((MenuRoot.ChildrenCount = 1) and (MenuRoot.ItemsCount = 1) and
-    (FTreeItems[Pointer(MenuRoot)].Count = 1) and
-    not FTreeItems.ContainsKey(Pointer(MenuRoot.Children[0])), 'menu serialization restores one internal container and real child');
-  SelectObject(MenuRoot);
-  RebuildTree;
-  Check(FTreeItems[Pointer(MenuChild)].ParentItem = FTreeItems[Pointer(MenuRoot)], 'reconciliation preserves logical menu hierarchy');
-  NewDocument;
-  AddObject('TVertScrollBox');
-  var ScrollRoot := FSelected;
-  AddObject('TRectangle');
-  var ScrollChild := FSelected;
-  Check((EditableParent(ScrollChild) = ScrollRoot) and
-    (FTreeItems[Pointer(ScrollChild)].ParentItem = FTreeItems[Pointer(ScrollRoot)]), 'scroll content flattened without losing authored child');
-  Check(EditableChildren(FDesignRoot)[0].TagObject = ScrollChild, 'scroll child workspace binding matches model');
-  DeleteObject;
-  Check(FSelected = ScrollRoot, 'scroll child deletion selects scroll box');
-
-  NewDocument;
-  AddObject('TLayout');
-  var ClipboardResource := FSelected;
-  ClipboardResource.StyleName := 'clipboardstyle';
-  AddObject('TRectangle');
-  var ClipboardRectangle := FSelected;
-  ClipboardRectangle.StyleName := 'background';
-  AddObject('TText');
-  TText(FSelected).Text := 'Текст из Delphi: ''цитата''' + sLineBreak + '第二行';
-  var ClipboardCaption := TText(FSelected).Text;
-  SelectObject(ClipboardRectangle);
-  var ElementText := ObjectText;
-  Check(ElementText.StartsWith('object') and ElementText.Contains('TRectangle') and
-    ElementText.Contains('TText') and not ElementText.Contains('SBDClipboard'), 'element uses native FMX object text');
-  SelectObject(ClipboardResource);
-  var BeforePasteUndo := FUndo.Count;
-  PasteObjectText(ElementText + sLineBreak + ElementText);
-  Check((ClipboardResource.ChildrenCount = 3) and (FUndo.Count = BeforePasteUndo + 1) and
-    (TText(FSelected.Children[0]).Text = ClipboardCaption), 'multiple sibling FMX objects paste with Unicode, children and one undo');
-  Undo(False);
-  Check(FRoot.Children[0].ChildrenCount = 1, 'undo removes entire multi-object paste');
-  Undo(True);
-  Check(FRoot.Children[0].ChildrenCount = 3, 'redo restores entire multi-object paste');
-  SelectObject(FRoot.Children[0]);
-  var ResourceText := ObjectText;
-  SelectObject(FRoot);
-  PasteObjectText(ResourceText);
-  Check((StyleResourceCount = 2) and (FSelected.StyleName <> 'clipboardstyle') and
-    (FSelected.ChildrenCount = 3), 'root paste retains subtree and gives resource a unique StyleName');
-  var ClipboardGroup := CreateStyleGroup('Вставленные стили', '');
-  FSelectedGroup := ClipboardGroup;
-  FSelected := nil;
-  PasteObjectText(ResourceText);
-  Check(GroupOf(FSelected) = ClipboardGroup.ID, 'paste into selected group assigns new root resource');
-  var ClipboardModel := FRoot;
-  var ClipboardUndo := FUndo.Count;
-  var InvalidPasteRejected := False;
-  try
-    PasteObjectText(ElementText + sLineBreak + 'object Broken: TUnknownClipboardClass' + sLineBreak + 'end');
-  except
-    on E: Exception do
-      InvalidPasteRejected := True;
-  end;
-  Check(InvalidPasteRejected and (FRoot = ClipboardModel) and (FUndo.Count = ClipboardUndo) and
-    (FSelected.ChildrenCount = 3), 'invalid second pasted object leaves model and history intact');
-  InvalidPasteRejected := False;
-  SelectObject(FRoot);
-  try
-    PasteObjectText('object Animation: TFloatAnimation' + sLineBreak + 'end');
-  except
-    on E: Exception do
-      InvalidPasteRejected := True;
-  end;
-  Check(InvalidPasteRejected and (FUndo.Count = ClipboardUndo), 'root paste rejects animation before changing history');
-
-  var BeforeCopyDirty := FDirty;
-  var BookText := StyleBookText;
-  Check(BookText.StartsWith('object StyleBook1: TStyleBook') and BookText.Contains('Styles = <') and
-    BookText.Contains('ResourcesBin = {'), 'whole book uses Delphi component text with embedded style binary');
-  Check((FRoot = ClipboardModel) and (FUndo.Count = ClipboardUndo) and (FDirty = BeforeCopyDirty),
-    'copy book preserves model, history and modified flag');
-  var ComponentSource := TStringStream.Create(BookText, TEncoding.UTF8);
-  var ComponentBinary := TMemoryStream.Create;
-  Book := TStyleBook.Create(nil);
-  try
-    ObjectTextToBinary(ComponentSource, ComponentBinary);
-    ComponentBinary.Position := 0;
-    TComponentAccess(Book).SetDesigning(True, False);
-    ComponentBinary.ReadComponent(Book);
-    Check(Book.Style.FindStyleResource('clipboardstyle') <> nil, 'standard Delphi component reader accepts exported book');
-  finally
-    TComponentAccess(Book).SetDesigning(False, False);
-    Book.Free;
-    ComponentBinary.Free;
-    ComponentSource.Free;
-  end;
-  var ImportedClipboardRoot := ReadStyleBookText(BookText);
-  ReplaceDocument(ImportedClipboardRoot, '');
-  Changed(False);
-  Check((StyleResourceCount = 3) and (FGroups.Count = 1) and (FUndo.Count = 0) and
-    FFileName.IsEmpty and FDirty, 'imported book restores embedded groups as an unsaved new document');
-  ClipboardModel := FRoot;
-  InvalidPasteRejected := False;
-  try
-    ImportedClipboardRoot := ReadStyleBookText(ElementText);
-    ImportedClipboardRoot.Free;
-  except
-    on E: Exception do
-      InvalidPasteRejected := True;
-  end;
-  Check(InvalidPasteRejected and (FRoot = ClipboardModel), 'book import rejects a different component without replacing document');
-  var ClipboardActiveStyle := TStyleManager.ActiveStyle(Self);
-  ImportedClipboardRoot := ReadStyleBookText(BookText.Replace('  Styles = <',
-      '  FileName = ''missing-clipboard-style.style''' + sLineBreak + '  UseStyleManager = True' +
-      sLineBreak + '  Styles = <'));
-  try
-    Check((ImportedClipboardRoot.FindStyleResource('clipboardstyle') <> nil) and
-      (TStyleManager.ActiveStyle(Self) = ClipboardActiveStyle), 'book import uses embedded styles without applying FileName or UseStyleManager');
-  finally
-    ImportedClipboardRoot.Free;
-  end;
-  var LegacyStyleStream := TMemoryStream.Create;
-  try
-    WriteStyleStream(LegacyStyleStream, TStyleFormat.Indexed);
-    var LegacyHex := TStringBuilder.Create;
-    try
-      for var I := 0 to Integer(LegacyStyleStream.Size) - 1 do
-      begin
-        if (I mod 32) = 0 then
-          LegacyHex.Append(sLineBreak);
-        LegacyHex.Append(IntToHex(PByte(LegacyStyleStream.Memory)[I], 2));
-      end;
-      ImportedClipboardRoot := ReadStyleBookText('object StyleBook1: TStyleBook' + sLineBreak +
-        '  ResourcesBin = {' + LegacyHex.ToString + '}' + sLineBreak + 'end');
-      try
-        Check(ImportedClipboardRoot.FindStyleResource('clipboardstyle') <> nil, 'legacy root ResourcesBin clipboard format supported');
-      finally
-        ImportedClipboardRoot.Free;
-      end;
-    finally
-      LegacyHex.Free;
-    end;
-  finally
-    LegacyStyleStream.Free;
-  end;
-
-  var RollbackClipboardRoot := ReadStyleBookText(BookText);
-  TStyleTag(RollbackClipboardRoot.FindStyleResource('#designer').FindStyleResource('project')).TagString := '{broken';
-  InvalidPasteRejected := False;
-  var RollbackClipboardUndo := FUndo.Count;
-  try
-    ReplaceDocument(RollbackClipboardRoot, '');
-  except
-    on E: Exception do
-      InvalidPasteRejected := True;
-  end;
-  Check(InvalidPasteRejected and (FRoot = ClipboardModel) and (FUndo.Count = RollbackClipboardUndo) and
-    (FGroups.Count = 1), 'invalid embedded clipboard metadata restores previous document and history');
-
-  SelectObject(FRoot.Children[0].Children[0]);
-  FTree.SetFocus;
-  Check(ClipboardFocus, 'tree focus enables element clipboard shortcuts');
-  ToolsTabs.ActiveTab := PaletteTab;
-  FSearch.SetFocus;
-  Check(not ClipboardFocus, 'text field focus preserves native clipboard shortcuts');
-  FSurface.SetFocus;
-  Check(ClipboardFocus and (FSurface.PopupMenu = ObjectMenu) and (FCanvas.PopupMenu = ObjectMenu) and
-    (TControl(FDesignRoot).PopupMenu = ObjectMenu), 'workspace focus and context menus support element clipboard');
-  var RightClickCopy := TControl(EditableChildren(FDesignRoot)[0]);
-  FSelectedGroup := FGroups[0];
-  DesignDown(RightClickCopy, TMouseButton.mbRight, [], 1, 1);
-  Check((FSelected = RightClickCopy.TagObject) and (FSelectedGroup = nil) and not FDragging,
-    'right click selects workspace object without dragging or stale group context');
-  ObjectMenuOpening(nil);
-  Check(CopyObjectButton.Enabled and PasteObjectButton.Enabled, 'workspace context menu enables copy and paste for selected control');
-
-  var MenuPopup := TPopup.Create(nil);
-  try
-    MenuPopup.Parent := RightClickCopy;
-    MenuPopup.UseParentScale := ObjectMenu.UseParentScale;
-    TControlAccess(RightClickCopy).Scale.Point := PointF(2, 3);
-    for var TestZoom in [50, 400, 2000] do
-    begin
-      SetWorkspaceZoom(TestZoom);
-      Check((Abs(MenuPopup.AbsoluteScale.X - 1) < 0.001) and
-        (Abs(MenuPopup.AbsoluteScale.Y - 1) < 0.001), 'context popup ignores object scale and workspace zoom ' + TestZoom.ToString);
-    end;
-  finally
-    MenuPopup.Free;
-  end;
-
-  NewDocument;
-  var ReferenceTarget := TLayout.Create(nil);
-  ReferenceTarget.StyleName := 'referenceTarget';
-  ReferenceTarget.Parent := FRoot;
-  var ReferenceUser := TLayout.Create(nil);
-  ReferenceUser.StyleName := 'referenceUser';
-  ReferenceUser.Parent := FRoot;
-  var ReferenceContainer := TLayout.Create(nil);
-  ReferenceContainer.Parent := ReferenceUser;
-  var ReferenceButton := TButton.Create(nil);
-  ReferenceButton.StyleLookup := 'REFERENCETARGET';
-  ReferenceButton.Parent := ReferenceContainer;
-  var DuplicateReference := TButton.Create(nil);
-  DuplicateReference.StyleLookup := 'referenceTarget';
-  DuplicateReference.Parent := ReferenceUser;
-  var MissingReference := TButton.Create(nil);
-  MissingReference.StyleLookup := 'missingReferenceStyle';
-  MissingReference.Parent := ReferenceUser;
-  var DefaultReference := TButton.Create(nil);
-  DefaultReference.Parent := ReferenceUser;
-  var DefaultReferenceRoot := TLayout.Create(nil);
-  DefaultReferenceRoot.StyleName := DefaultReference.DefaultStyleLookupName;
-  DefaultReferenceRoot.Parent := FRoot;
-  var HiddenReference := TButton.Create(nil);
-  HiddenReference.StyleLookup := 'hiddenReferenceStyle';
-  HiddenReference.Stored := False;
-  HiddenReference.Parent := ReferenceUser;
-  var MetadataReference := TButton.Create(nil);
-  MetadataReference.StyleLookup := 'referenceTarget';
-  MetadataReference.Parent := DesignerLayout(True);
-  SetModelDesigning(FRoot);
-  RebuildTree;
-  SelectObject(ReferenceUser);
-  ClearHistory;
-  var BeforeReferenceMenu := Snapshot;
-  ObjectMenuOpening(nil);
-  Check(UsedInButton.Enabled and DependenciesButton.Enabled and (DependenciesButton.ItemsCount = 3),
-    'reference menu collects nested, distinct and default control styles, excluding unstored controls');
-  Check((MenuReference(DependenciesButton, 'referenceTarget') <> nil) and
-    MenuReference(DependenciesButton, 'referenceTarget').Enabled and
-    not MenuReference(DependenciesButton, 'missingReferenceStyle').Enabled,
-    'dependencies resolve case insensitive roots and mark missing styles');
-  Check(CompareText(DependenciesButton.Items[0].TagString, DependenciesButton.Items[1].TagString) < 0,
-    'reference menu sorts names without regard to case');
-  Check(SameSnapshot(BeforeReferenceMenu, Snapshot) and (FUndo.Count = 0) and not FDirty,
-    'opening reference menus does not change document or history');
-  StyleReferenceClick(MenuReference(DependenciesButton, 'referenceTarget'));
-  Check(FSelected = ReferenceTarget, 'dependency menu navigates to root style');
-  ObjectMenuOpening(nil);
-  Check((UsedInButton.ItemsCount = 3) and (MenuReference(UsedInButton, 'referenceUser') <> nil) and
-    UsedInButton.Items[1].IsSeparator and (MenuClass('TButton') <> nil) and
-    not MenuClass('TButton').Enabled and not Assigned(MenuClass('TButton').OnClick),
-    'used in menu excludes metadata and lists each containing style once');
-  StyleReferenceClick(MenuReference(UsedInButton, 'referenceUser'));
-  Check(FSelected = ReferenceUser, 'used in menu navigates to containing style');
-  SelectObject(DefaultReferenceRoot);
-  ObjectMenuOpening(nil);
-  Check(MenuReference(UsedInButton, 'referenceUser') <> nil,
-    'used in menu includes controls using their default StyleLookup');
-  SelectObject(ReferenceUser);
-  ReferenceButton.StyleLookup := 'referenceUser';
-  ObjectMenuOpening(nil);
-  Check((MenuReference(UsedInButton, 'referenceUser') <> nil) and
-    (MenuReference(DependenciesButton, 'referenceUser') <> nil),
-    'self references are listed without recursive style expansion');
-  ReferenceButton.StyleLookup := 'changedReferenceStyle';
-  ObjectMenuOpening(nil);
-  Check((MenuReference(DependenciesButton, 'referenceUser') = nil) and
-    (MenuReference(DependenciesButton, 'changedReferenceStyle') <> nil),
-    'reference menus rebuild after StyleLookup edits');
-  SelectObject(ReferenceTarget);
-  ObjectMenuOpening(nil);
-  Check((DependenciesButton.ItemsCount = 1) and not DependenciesButton.Items[0].Enabled,
-    'empty dependencies have a disabled explanatory item');
-  SelectObject(ReferenceButton);
-  ObjectMenuOpening(nil);
-  Check(not UsedInButton.Enabled and not DependenciesButton.Enabled and
-    (DependenciesButton.ItemsCount = 0), 'reference commands are disabled for nested objects');
-  SelectObject(FRoot);
-  ObjectMenuOpening(nil);
-  Check(not UsedInButton.Enabled and not DependenciesButton.Enabled, 'reference commands are disabled without a style');
-  SelectObject(ReferenceUser);
-  TStyleTreeView(FTree).ChooseItem(FTreeItems[Pointer(ReferenceTarget)], [ssCtrl]);
-  ObjectMenuOpening(nil);
-  Check(not UsedInButton.Enabled and not DependenciesButton.Enabled,
-    'reference commands are disabled for multiple selected styles');
-  var ReferenceGroup := CreateStyleGroup('Reference group', '');
-  FTree.Selected := FTreeItems[Pointer(ReferenceGroup)];
-  ObjectMenuOpening(nil);
-  Check(not UsedInButton.Enabled and not DependenciesButton.Enabled,
-    'reference commands are disabled for groups');
-  Check(ObjectEditSeparator.IsSeparator and ObjectReferencesSeparator.IsSeparator and
-    ObjectGroupsSeparator.IsSeparator and ObjectSortSeparator.IsSeparator and
-    ObjectOrderSeparator.IsSeparator and ObjectHierarchySeparator.IsSeparator and
-    FileSaveSeparator.IsSeparator and FileImportSeparator.IsSeparator and FileClipboardSeparator.IsSeparator,
-    'command groups use ordinary menu items with separator text');
-
-  var CalendarReference := TLayout.Create(nil);
-  CalendarReference.StyleName := 'calendarstyle_sized';
-  CalendarReference.Parent := FRoot;
-  var CalendarDays := TListBox.Create(nil);
-  CalendarDays.StyleName := 'days';
-  CalendarDays.DefaultItemStyles.ItemStyle := 'DAYS_ITEMS';
-  CalendarDays.DefaultItemStyles.GroupHeaderStyle := 'days_header';
-  CalendarDays.DefaultItemStyles.GroupFooterStyle := 'days_footer';
-  CalendarDays.Parent := CalendarReference;
-  var DaysResource := TLayout.Create(nil);
-  DaysResource.StyleName := 'days_items';
-  DaysResource.Parent := FRoot;
-  SetModelDesigning(FRoot);
-  RebuildTree;
-  SelectObject(DaysResource);
-  ClearHistory;
-  var BeforeDynamicMenu := Snapshot;
-  ObjectMenuOpening(nil);
-  Check((CalendarDays.Count = 0) and (MenuReference(UsedInButton, 'calendarstyle_sized') <> nil) and
-    (MenuClass('TCalendar') <> nil) and (MenuClass('TDayItem') <> nil) and
-    (MenuClass('TListBoxItem') <> nil),
-    'runtime calendar days styles resolve through DefaultItemStyles without serialized day controls');
-  Check(UsedInButton.Items[1].IsSeparator and SameSnapshot(BeforeDynamicMenu, Snapshot) and
-    (FUndo.Count = 0) and not FDirty,
-    'dynamic class menu is separated and does not instantiate controls or change the document');
-  for var I := 3 to UsedInButton.ItemsCount - 1 do
-    Check(CompareText(UsedInButton.Items[I - 1].Text, UsedInButton.Items[I].Text) < 0,
-      'control classes are sorted and deduplicated');
-  CalendarDays.DefaultItemStyles.ItemStyle := 'changed_days_items';
-  ObjectMenuOpening(nil);
-  Check((MenuReference(UsedInButton, 'calendarstyle_sized') = nil) and
-    (MenuClass('TCalendar') = nil) and (UsedInButton.ItemsCount = 3),
-    'dynamic style links rebuild after settings change and explain unknown consumers');
-  SelectObject(CalendarReference);
-  ObjectMenuOpening(nil);
-  Check((MenuReference(DependenciesButton, 'changed_days_items') <> nil) and
-    (MenuReference(DependenciesButton, 'days_header') <> nil) and
-    (MenuReference(DependenciesButton, 'days_footer') <> nil),
-    'dependencies include runtime list item, header and footer styles');
-
-  var SourceAtlas := TImage.Create(nil);
-  SourceAtlas.StyleName := 'referenceAtlas.bmp';
-  SourceAtlas.Parent := FRoot;
-  var SourceUser := TLayout.Create(nil);
-  SourceUser.StyleName := 'sourceUser';
-  SourceUser.Parent := FRoot;
-  var SourceContainer := TLayout.Create(nil);
-  SourceContainer.Parent := SourceUser;
-  var SourceObject := TStyleObject.Create(nil);
-  SourceObject.SourceLookup := 'REFERENCEATLAS.BMP';
-  SourceObject.Parent := SourceContainer;
-  var DuplicateSource := TStyleObject.Create(nil);
-  DuplicateSource.SourceLookup := SourceAtlas.StyleName;
-  DuplicateSource.Parent := SourceUser;
-  var MaskedSource := TMaskedImage.Create(nil);
-  MaskedSource.SourceLookup := SourceAtlas.StyleName;
-  MaskedSource.Parent := SourceContainer;
-  var MissingSource := TStyleObject.Create(nil);
-  MissingSource.SourceLookup := 'missingAtlas.bmp';
-  MissingSource.Parent := SourceUser;
-  var HiddenSource := TStyleObject.Create(nil);
-  HiddenSource.SourceLookup := 'hiddenAtlas.bmp';
-  HiddenSource.Stored := False;
-  HiddenSource.Parent := SourceUser;
-  var MetadataSource := TStyleObject.Create(nil);
-  MetadataSource.SourceLookup := SourceAtlas.StyleName;
-  MetadataSource.Parent := DesignerLayout(True);
-  var RootSource := TButtonStyleObject.Create(nil);
-  RootSource.StyleName := 'sourceButtonStyle';
-  RootSource.SourceLookup := SourceAtlas.StyleName;
-  RootSource.Parent := FRoot;
-  SetModelDesigning(FRoot);
-  RebuildTree;
-  SelectObject(SourceAtlas);
-  ClearHistory;
-  var BeforeSourceMenu := Snapshot;
-  ObjectMenuOpening(nil);
-  Check((UsedInButton.ItemsCount = 6) and (MenuReference(UsedInButton, 'sourceUser') <> nil) and
-    (MenuReference(UsedInButton, 'sourceButtonStyle') <> nil) and UsedInButton.Items[2].IsSeparator and
-    (MenuClass('TStyleObject') <> nil) and (MenuClass('TButtonStyleObject') <> nil) and
-    (MenuClass('TMaskedImage') <> nil),
-    'SourceLookup finds distinct root and nested bitmap consumers, including masked image wrappers');
-  Check(SameSnapshot(BeforeSourceMenu, Snapshot) and (FUndo.Count = 0) and not FDirty,
-    'SourceLookup inspection preserves source images, document and history');
-  StyleReferenceClick(MenuReference(UsedInButton, 'sourceUser'));
-  Check(FSelected = SourceUser, 'SourceLookup used in menu navigates to the consuming resource');
-  ObjectMenuOpening(nil);
-  Check((DependenciesButton.ItemsCount = 2) and
-    MenuReference(DependenciesButton, 'referenceAtlas.bmp').Enabled and
-    not MenuReference(DependenciesButton, 'missingAtlas.bmp').Enabled and
-    (MenuReference(DependenciesButton, 'hiddenAtlas.bmp') = nil),
-    'SourceLookup dependencies resolve images without case sensitivity, flag missing images and skip unstored objects');
-  StyleReferenceClick(MenuReference(DependenciesButton, 'referenceAtlas.bmp'));
-  Check(FSelected = SourceAtlas, 'SourceLookup dependency menu navigates to the source image');
-  SourceObject.SourceLookup := '';
-  DuplicateSource.SourceLookup := 'changedAtlas.bmp';
-  MaskedSource.SourceLookup := 'changedAtlas.bmp';
-  ObjectMenuOpening(nil);
-  Check((MenuReference(UsedInButton, 'sourceUser') = nil) and
-    (MenuReference(UsedInButton, 'sourceButtonStyle') <> nil) and
-    (MenuClass('TStyleObject') = nil) and (MenuClass('TMaskedImage') = nil),
-    'SourceLookup usage rebuilds after changing or clearing source names');
-
-  NewDocument;
-  AddObject('TLayout');
-  var SortZeta := FSelected;
-  SortZeta.StyleName := 'Zeta';
-  AddObject('TRectangle');
-  FSelected.StyleName := 'zchild';
-  SelectObject(SortZeta);
-  AddObject('TText');
-  FSelected.StyleName := 'achild';
-  var SortSelection := FSelected;
-  SelectObject(FRoot);
-  AddObject('TLayout');
-  var SortAlpha := FSelected;
-  SortAlpha.StyleName := 'alpha';
-  SelectObject(FRoot);
-  AddObject('TLayout');
-  FSelected.StyleName := 'beta';
-  var SortGroup := CreateStyleGroup('Сортировка', '');
-  SortZeta.Name := 'SortZeta';
-  SortAlpha.Name := 'SortAlpha';
-  FAssignments.AddOrSetValue(SortZeta.Name, SortGroup.ID);
-  FAssignments.AddOrSetValue(SortAlpha.Name, SortGroup.ID);
-  var SortMetadata := DesignerLayout(True);
-  SortMetadata.Index := FRoot.ChildrenCount - 1;
-  SelectObject(SortSelection);
-  ClearHistory;
-  FTree.ExpandAll;
-  Check(FTree.GlobalCount > FTree.Count, 'prime expanded tree index before sorting');
-  SortStyles;
-  CheckTreeOrder;
-  Check((FRoot.Children[0] = SortAlpha) and (FRoot.Children[3] = SortMetadata) and
-    (FRoot.Children[1].StyleName = 'beta') and (FRoot.Children[2] = SortZeta),
-    'resource sort ignores name case and retains metadata position');
-  Check((FSelected = SortSelection) and (SortZeta.Children[0].StyleName = 'zchild') and
-    (SortZeta.Children[1].StyleName = 'achild'), 'resource sort preserves selection and child stacking order');
-  var SortGroupItem := FTreeItems[Pointer(SortGroup)];
-  Check((SortGroupItem.Items[0].TagObject = SortAlpha) and (SortGroupItem.Items[1].TagObject = SortZeta) and
-    (GroupOf(SortZeta) = SortGroup.ID), 'tree displays sorted styles within their original group');
-  Check(FDirty and (FUndo.Count = 1), 'resource sort is one document change');
-  SortStyles;
-  Check(FUndo.Count = 1, 'already sorted resources do not add history');
-  Undo(False);
-  Check((FRoot.Children[0].StyleName = 'Zeta') and (FRoot.Children[3].StyleName = '#designer') and
-    (FRoot.Children[1].StyleName = 'alpha'), 'undo restores resource order and metadata position');
-  Undo(True);
-  Check((FRoot.Children[0].StyleName = 'alpha') and (FRoot.Children[2].StyleName = 'Zeta'),
-    'redo reapplies resource sort');
-  var SortedStyleFile := System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-sorted.style');
-  SaveStyle(SortedStyleFile, TStyleFormat.Indexed);
-  LoadDocument(SortedStyleFile);
-  Check((FRoot.Children[0].StyleName = 'alpha') and (FRoot.Children[2].StyleName = 'Zeta') and
-    (FGroups.Count = 1), 'sorted order and groups persist in style file');
-  TFile.Delete(SortedStyleFile);
-
-  NewDocument;
-  AddObject('TLayout');
-  FSelected.StyleName := 'multiAlpha';
-  var MultiAlpha := FSelected;
-  AddObject('TRectangle');
-  FSelected.StyleName := 'multiOne';
-  var MultiOne := FSelected;
-  SelectObject(MultiAlpha);
-  AddObject('TText');
-  FSelected.StyleName := 'multiTwo';
-  TText(FSelected).Text := 'Файл';
-  var MultiTwo := FSelected;
-  SelectObject(FRoot);
-  AddObject('TLayout');
-  FSelected.StyleName := 'multiBeta';
-  var MultiBeta := FSelected;
-  AddObject('TRectangle');
-  FSelected.StyleName := 'multiThree';
-  var MultiThree := FSelected;
-  FTree.ExpandAll;
-  var MultiTree := TStyleTreeView(FTree);
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiThree)], [ssCtrl]);
-  Check((Length(SelectedTreeModels) = 2) and (FSelected = MultiThree), 'Ctrl selects same-level objects under different parents');
-  var MultiText := ObjectText;
-  Check(MultiText.Contains('multiOne') and MultiText.Contains('multiThree') and not MultiText.Contains('multiTwo'),
-    'multi-selection exports only selected FMX objects');
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiOne)], [], True);
-  Check(Length(SelectedTreeModels) = 2, 'right click retains multi-selection');
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiOne)], [ssCtrl]);
-  Check((Length(SelectedTreeModels) = 1) and (FSelected = MultiThree), 'Ctrl toggles off primary and retains active object');
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiAlpha)], [ssCtrl]);
-  Check((Length(SelectedTreeModels) = 1) and (FSelected = MultiAlpha), 'Ctrl across levels resets selection');
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiThree)], [ssShift]);
-  Check(Length(SelectedTreeModels) = 3, 'Shift range skips intervening rows at another level');
-  for var Item in MultiTree.SelectedItems do
-    Check(Item.Level = FTreeItems[Pointer(MultiThree)].Level, 'range contains only one depth');
-  RebuildTree;
-  Check(Length(SelectedTreeModels) = 3, 'tree refresh retains multi-selection');
-  MultiBeta.Index := 0;
-  RebuildTree;
-  Check(FTree.GlobalCount > FTree.Count, 'prime tree index before sorting with multi-selection');
-  SortStyles;
-  Check((Length(SelectedTreeModels) = 3) and (FRoot.Children[0] = MultiAlpha),
-    'sort preserves all same-level selected objects');
-  CheckTreeOrder;
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiAlpha)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiThree)], [ssShift]);
-  Check((Length(SelectedTreeModels) = 1) and (FSelected = MultiThree), 'Shift across levels resets selection');
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiOne)], []);
-  var MultiKey: Word := vkDown;
-  var MultiChar: WideChar := #0;
-  MultiTree.KeyDown(MultiKey, MultiChar, [ssShift]);
-  Check((MultiKey = 0) and (Length(SelectedTreeModels) = 2) and (FSelected = MultiTwo), 'Shift+Down extends keyboard selection');
-  MultiKey := Ord('A');
-  MultiTree.KeyDown(MultiKey, MultiChar, [ssCtrl]);
-  Check(Length(SelectedTreeModels) = 3, 'Ctrl+A selects visible objects at the active level');
-  FTreeItems[Pointer(MultiBeta)].IsExpanded := False;
-  MultiKey := Ord('A');
-  MultiTree.KeyDown(MultiKey, MultiChar, [ssCtrl]);
-  Check(Length(SelectedTreeModels) = 2, 'Ctrl+A excludes collapsed descendants');
-  FTreeItems[Pointer(MultiBeta)].IsExpanded := True;
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiOne)], []);
-  FTree.ViewportPosition := PointF(0, 0);
-  var MultiPoint := FTree.AbsoluteToLocal(FTreeItems[Pointer(MultiTwo)].LocalToAbsolute(PointF(180, 12)));
-  FTree.AllowDrag := False;
-  try
-    MultiTree.MouseDown(TMouseButton.mbLeft, [ssCtrl], MultiPoint.X, MultiPoint.Y);
-  finally
-    FTree.AllowDrag := True;
-  end;
-  Check((Length(SelectedTreeModels) = 2) and (FSelected = MultiTwo), 'native Ctrl-click preserves earlier selected row');
-  ObjectMenuOpening(nil);
-  Check(CopyObjectButton.Enabled and DuplicateButton.Enabled and DeleteButton.Enabled and not IndentButton.Enabled,
-    'multi-selection menu enables batch actions');
-  ClearHistory;
-  DuplicateObject;
-  Check((MultiAlpha.ChildrenCount = 4) and (Length(SelectedTreeModels) = 2) and (FUndo.Count = 1),
-    'duplicate processes all selected objects as one undo step');
-  DeleteSelection;
-  Check((MultiAlpha.ChildrenCount = 2) and (FUndo.Count = 2), 'delete processes the duplicated selection as one undo step');
-  Undo(False);
-  Check(FRoot.FindStyleResource('multiAlpha').ChildrenCount = 4, 'undo restores deleted objects');
-  Undo(False);
-  Check(FRoot.FindStyleResource('multiAlpha').ChildrenCount = 2, 'undo restores original objects before batch duplicate');
-  MultiAlpha := FRoot.FindStyleResource('multiAlpha');
-  MultiTwo := MultiAlpha.FindStyleResource('multiTwo');
-  SelectObject(MultiAlpha);
-  ClearHistory;
-  PasteObjectText(MultiText);
-  Check((MultiAlpha.ChildrenCount = 4) and (FUndo.Count = 1), 'copied multi-selection pastes as standard sibling FMX objects');
-  Undo(False);
-  MultiAlpha := FRoot.FindStyleResource('multiAlpha');
-  MultiTwo := MultiAlpha.FindStyleResource('multiTwo');
-  SelectObject(MultiAlpha);
-  AddObject('TButton');
-  FSelected.StyleName := 'authoredButton';
-  TButton(FSelected).Text := 'Файл';
-  var AuthoredButton := TButton(FSelected);
-  SelectObject(MultiTwo);
-  RefreshDesign(True);
-  var LanguageState := Snapshot;
-  var LanguageUndo := FUndo.Count;
-  var LanguageDirty := FDirty;
-  LanguageBox.ItemIndex := 1;
-  Check(Language.Lang = 'en-US', 'TLang selected language: ' + Language.Lang);
-  var ThemeIndexBeforeLanguage := ComboBoxTheme.ItemIndex;
-  var EnglishDialogReport := TStringList.Create;
-  try
-    RunWinUIDialogTests(Self, EnglishDialogReport, '-english');
-    RunGradientDialogTests(Self, EnglishDialogReport, '-english');
-    for var Message in EnglishDialogReport do
-      Check(True, Message);
-  finally
-    EnglishDialogReport.Free;
-  end;
-  Check((ComboBoxTheme.Items[0] = 'Use system parameters') and
-    (ComboBoxTheme.Items[1] = 'Light') and (ComboBoxTheme.Items[2] = 'Dark') and
-    (ComboBoxTheme.Hint = 'App theme'), 'English application theme options and hint');
-  Check(FileButton.Text = 'File', 'English toolbar: ' + FileButton.Text);
-  Check(CopyObjectButton.Text = 'Copy (Ctrl+C)', 'English menu: ' + CopyObjectButton.Text);
-  Check((UsedInButton.Text = 'Used in ...') and (DependenciesButton.Text = 'Dependencies'),
-    'style reference menu captions switch to English');
-  Check(FCategory.Items[0] = 'All', 'English category: ' + FCategory.Items[0]);
-  Check(FBackgroundMode.Items[0] = 'Light background', 'English background: ' + FBackgroundMode.Items[0]);
-  Check((TText(MultiTwo).Text = 'Файл') and (TText(FDesignRoot.FindStyleResource('multiTwo')).Text = 'Файл'),
-    'language switching preserves authored style text and workspace copy');
-  var AuthoredButtonCopy := FindDesignObject(FDesignRoot, AuthoredButton);
-  Check(AuthoredButton.Text = 'Файл', 'language preserves authored button model text: ' + AuthoredButton.Text);
-  Check(AuthoredButtonCopy is TButton, 'authored styled control has a workspace copy');
-  Check(TButton(AuthoredButtonCopy).Text = 'Файл', 'language preserves authored button workspace text: ' + TButton(AuthoredButtonCopy).Text);
-  Check(SameSnapshot(LanguageState, Snapshot) and (FUndo.Count = LanguageUndo) and (FDirty = LanguageDirty),
-    'language switching does not modify document or history');
-  ValuesDialog := TNamedValuesDialog.CreateEditor(Self);
-  try
-    Check((ValuesDialog.Caption = 'Named values') and (ValuesDialog.NameColumn.Header = 'Name') and
-      (ValuesDialog.FKind.Items[0] = 'Color'), 'English named values dialog translates headers and types');
-    ValuesDialog.ResourceAction(ValuesDialog.AddButton);
-    Check(ValuesDialog.Values[0].Kind = 'Цвет', 'English resource picker retains canonical stored kind');
-    ValuesDialog.EditValue(nil, 1, 0, TValue.From<string>('Integer'));
-    Check((ValuesDialog.Values[0].Kind = 'Целое') and (ValuesDialog.FGrid.Cells[1, 0] = 'Integer'),
-      'English grid type editing round-trips canonical kind');
-    var BeforeInvalidValue := ValuesDialog.Values[0].LightValue;
-    ValuesDialog.EditValue(nil, 2, 0, TValue.From<string>('invalid'));
-    Check(ValuesDialog.ValidationError.Visible and not ValuesDialog.ValidationError.Text.IsEmpty and
-      (ValuesDialog.Values[0].LightValue = BeforeInvalidValue),
-      'invalid value shows contextual feedback and preserves the draft');
-    ValuesDialog.EditValue(nil, 2, 0, TValue.From<string>('2'));
-    Check(not ValuesDialog.ValidationError.Visible and (ValuesDialog.Values[0].LightValue = '2'),
-      'valid value clears contextual feedback');
-    CaptureDialog(ValuesDialog, 'selftest-values-english.png');
-  finally
-    ValuesDialog.Free;
-  end;
-  var EnglishTextDialog := TTextEditorForm.Create(Self);
-  try
-    Check(EnglishTextDialog.Caption = 'Text editor', 'new English text dialog caption: ' + EnglishTextDialog.Caption);
-    Check(EnglishTextDialog.ApplyButton.Text = 'Apply', 'new English text dialog button: ' + EnglishTextDialog.ApplyButton.Text);
-    Check(EnglishTextDialog.WordWrapCheck.Text = 'Word wrap', 'English word wrap option');
-  finally
-    EnglishTextDialog.Free;
-  end;
-  CaptureDialog(Self, 'selftest-english.png');
-  LanguageBox.ItemIndex := 0;
-  Check((ComboBoxTheme.Items[0] = 'Как в системе') and
-    (ComboBoxTheme.Items[1] = 'Светлая') and (ComboBoxTheme.Items[2] = 'Тёмная') and
-    (ComboBoxTheme.ItemIndex = ThemeIndexBeforeLanguage), 'Russian application theme options preserve selection');
-  Check((FileButton.Text = 'Файл') and (FCategory.Items[0] = 'Все') and
-    (FBackgroundMode.Items[0] = 'Светлый фон') and (CopyObjectButton.Text = 'Копировать (Ctrl+C)'),
-    'TLang switches translated UI back to Russian');
-  Check(SameSnapshot(LanguageState, Snapshot) and (TText(MultiTwo).Text = 'Файл'), 'Russian switch leaves document unchanged');
-  Check((UsedInButton.Text = 'Используется в ...') and (DependenciesButton.Text = 'Зависимости'),
-    'style reference menu captions switch back to Russian');
-  var LanguageColorDialog := TColorEditorForm.Create(Self);
-  try
-    LanguageBox.ItemIndex := 1;
-    TranslateForm(LanguageColorDialog);
-    Check((LanguageColorDialog.Caption = 'Resource color') and (LanguageColorDialog.ApplyButton.Text = 'Apply'),
-      'English color dialog captions');
-    LanguageBox.ItemIndex := 0;
-    TranslateForm(LanguageColorDialog);
-    Check((LanguageColorDialog.Caption = 'Цвет ресурса') and (LanguageColorDialog.ApplyButton.Text = 'Применить'),
-      'dialog captions switch back to Russian');
-  finally
-    LanguageColorDialog.Free;
-  end;
-  // CaptureDialog(Self) hides the form; native hit testing needs visible rows.
-  Show;
-  NewDocument;
-  AddObject('TLayout');
-  FSelected.StyleName := 'dragAlpha';
-  var DragAlpha := FSelected;
-  AddObject('TRectangle');
-  FSelected.StyleName := 'dragOne';
-  var DragOne := FSelected;
-  SelectObject(FRoot);
-  AddObject('TLayout');
-  FSelected.StyleName := 'dragBeta';
-  var DragBeta := FSelected;
-  AddObject('TText');
-  FSelected.StyleName := 'dragTwo';
-  var DragTwo := FSelected;
-  SelectObject(FRoot);
-  AddObject('TLayout');
-  FSelected.StyleName := 'dragTarget';
-  var DragContainer := FSelected;
-  FTree.ExpandAll;
-  FTree.ViewportPosition := PointF(0, 0);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragTwo)], [ssCtrl]);
-  Application.ProcessMessages;
-  FTree.RealignContent;
-  FTree.ViewportPosition := PointF(0, 0);
-  var DragPoint := FTree.AbsoluteToLocal(FTreeItems[Pointer(DragOne)].LocalToAbsolute(PointF(180, 12)));
-  Check(FTree.ItemByPoint(DragPoint.X, DragPoint.Y) = FTreeItems[Pointer(DragOne)],
-    'batch mouse test hits source row');
-  MultiTree.MouseDown(TMouseButton.mbLeft, [], DragPoint.X, DragPoint.Y);
-  Check((Length(SelectedTreeModels) = 2) and (FSelected = DragOne) and FTree.AllowDrag,
-    'native mouse down on selected row retains all drag sources');
-  MultiTree.MouseUp(TMouseButton.mbLeft, [], DragPoint.X, DragPoint.Y);
-  ClearHistory;
-  Check(CanDrop(FTreeItems[Pointer(DragOne)], FTreeItems[Pointer(DragAlpha)]),
-    'batch drop allows a source already in the target parent');
-  TreeDragChange(FTreeItems[Pointer(DragOne)], FTreeItems[Pointer(DragAlpha)], DropAllowed);
-  DeferredRefresh(nil);
-  Check((DragOne.Parent = DragAlpha) and (DragTwo.Parent = DragAlpha) and
-    (DragBeta.ChildrenCount = 0) and (Length(SelectedTreeModels) = 0) and
-    (FTree.Selected = nil) and (Length(MultiTree.SelectedItems) = 0) and (FUndo.Count = 1),
-    'batch drop moves other source and clears the entire selection');
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragTwo)], [ssCtrl]);
-  TreeDragChange(FTreeItems[Pointer(DragOne)], FTreeItems[Pointer(DragContainer)], DropAllowed);
-  DeferredRefresh(nil);
-  Check(not DropAllowed and (DragOne.Parent = DragContainer) and (DragTwo.Parent = DragContainer) and
-    (DragContainer.Children[0] = DragOne) and (DragContainer.Children[1] = DragTwo) and
-    (Length(SelectedTreeModels) = 0) and (FUndo.Count = 2),
-    'batch drop moves all objects in tree order with one undo and clears selection');
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragTwo)], [ssCtrl]);
-  Check(not CanDrop(FTreeItems[Pointer(DragOne)], FTreeItems[Pointer(DragContainer)]),
-    'batch drop onto the current parent is a no-op');
-  Check(not CanDrop(FTreeItems[Pointer(DragOne)], FTreeItems[Pointer(DragTwo)]),
-    'batch drop rejects a target contained in the selection');
-  Undo(False);
-  Check((FRoot.FindStyleResource('dragAlpha').ChildrenCount = 2) and
-    (FRoot.FindStyleResource('dragTarget').ChildrenCount = 0), 'undo restores the whole batch drop');
-  Undo(True);
-  DragAlpha := FRoot.FindStyleResource('dragAlpha');
-  DragContainer := FRoot.FindStyleResource('dragTarget');
-  DragOne := DragContainer.FindStyleResource('dragOne');
-  DragTwo := DragContainer.FindStyleResource('dragTwo');
-  Check((DragAlpha.ChildrenCount = 0) and (DragContainer.ChildrenCount = 2), 'redo restores the whole batch drop');
-  SelectObject(DragOne);
-  AddObject('TText');
-  var DragDescendant := FSelected;
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragTwo)], [ssCtrl]);
-  Check(not CanDrop(FTreeItems[Pointer(DragTwo)], FTreeItems[Pointer(DragDescendant)]),
-    'batch drop checks ancestor cycles for every selected object');
-  SelectObject(DragContainer);
-  AddObject('TFloatAnimation');
-  var DragAnimation := FSelected;
-  var DragGroup := CreateStyleGroup('Batch destination', '');
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragAnimation)], [ssCtrl]);
-  ClearHistory;
-  Check(not CanDrop(FTreeItems[Pointer(DragOne)], FTreeItems[Pointer(DragGroup)]),
-    'batch promotion rejects a selected nonvisual object');
-  TreeDragChange(FTreeItems[Pointer(DragOne)], FTreeItems[Pointer(DragGroup)], DropAllowed);
-  Check((DragOne.Parent = DragContainer) and (DragAnimation.Parent = DragContainer) and
-    (Length(SelectedTreeModels) = 2) and (FUndo.Count = 0),
-    'invalid batch drop leaves all parents, selection and history intact');
-  DragOne.StyleName := 'shared';
-  DragTwo.StyleName := 'shared';
-  DragAlpha.StyleName := 'shared';
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragTwo)], [ssCtrl]);
-  FTreeItems[Pointer(DragGroup)].IsExpanded := False;
-  TreeDragChange(FTreeItems[Pointer(DragOne)], FTreeItems[Pointer(DragGroup)], DropAllowed);
-  DeferredRefresh(nil);
-  Check((DragOne.Parent = FRoot) and (DragTwo.Parent = FRoot) and
-    (GroupOf(DragOne) = DragGroup.ID) and (GroupOf(DragTwo) = DragGroup.ID) and
-    not SameText(DragOne.StyleName, DragTwo.StyleName) and not SameText(DragOne.StyleName, DragAlpha.StyleName) and
-    not SameText(DragTwo.StyleName, DragAlpha.StyleName) and (Length(SelectedTreeModels) = 0) and (FUndo.Count = 1),
-    'batch promotion creates unique root resources in a group and clears selection');
-  Check(not FTreeItems[Pointer(DragGroup)].IsExpanded,
-    'batch drop into a collapsed group preserves its fold');
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragTwo)], [ssCtrl]);
-  FTreeItems[Pointer(DragGroup)].IsExpanded := False;
-  ObjectMenuOpening(nil);
-  Check(MoveToGroupButton.Enabled and UngroupButton.Enabled, 'resource selection enables batch grouping menu actions');
-  GroupAction(acUngroup);
-  DeferredRefresh(nil);
-  Check(GroupOf(DragOne).IsEmpty and GroupOf(DragTwo).IsEmpty and
-    (Length(SelectedTreeModels) = 0) and (FUndo.Count = 2), 'ungroup menu processes the whole selection with one undo and clears selection');
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragOne)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragTwo)], [ssCtrl]);
-  AssignSelectionToGroup(DragGroup.ID);
-  DeferredRefresh(nil);
-  Check((GroupOf(DragOne) = DragGroup.ID) and (GroupOf(DragTwo) = DragGroup.ID) and
-    (Length(SelectedTreeModels) = 0) and (FUndo.Count = 3), 'group menu processes the whole selection with one undo and clears selection');
-  Check(not FTreeItems[Pointer(DragGroup)].IsExpanded,
-    'batch group menu preserves a collapsed destination');
-  var DragOuterGroup := CreateStyleGroup('Outer destination', '');
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragGroup)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragAlpha)], [ssCtrl]);
-  ClearHistory;
-  ObjectMenuOpening(nil);
-  Check(MoveToGroupButton.Enabled, 'mixed group and root resource selection enables batch grouping');
-  FTreeItems[Pointer(DragOuterGroup)].IsExpanded := False;
-  AssignSelectionToGroup(DragOuterGroup.ID);
-  DeferredRefresh(nil);
-  Check((DragGroup.ParentID = DragOuterGroup.ID) and (GroupOf(DragAlpha) = DragOuterGroup.ID) and
-    (DragAlpha.Parent = FRoot) and (Length(SelectedTreeModels) = 0) and (FUndo.Count = 1),
-    'batch grouping moves a group and resource without FMX reparenting');
-  Check(not FTreeItems[Pointer(DragOuterGroup)].IsExpanded and not FTreeItems[Pointer(DragGroup)].IsExpanded,
-    'moving a group and resource retains destination and moved group folds');
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragGroup)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(DragAlpha)], [ssCtrl]);
-  FTreeItems[Pointer(DragOuterGroup)].IsExpanded := False;
-  GroupAction(acUngroup);
-  DeferredRefresh(nil);
-  Check(DragGroup.ParentID.IsEmpty and GroupOf(DragAlpha).IsEmpty and
-    (Length(SelectedTreeModels) = 0) and (FUndo.Count = 2), 'mixed selection ungroups as one operation and clears selection');
-  var FoldNestedGroup := CreateStyleGroup('Nested destination', DragOuterGroup.ID);
-  SelectObject(DragAlpha);
-  FTreeItems[Pointer(DragOuterGroup)].IsExpanded := False;
-  FTreeItems[Pointer(FoldNestedGroup)].IsExpanded := False;
-  AssignToGroup(DragAlpha, nil, FoldNestedGroup.ID);
-  DeferredRefresh(nil);
-  Check((GroupOf(DragAlpha) = FoldNestedGroup.ID) and (Length(SelectedTreeModels) = 0) and
-    not FTreeItems[Pointer(DragOuterGroup)].IsExpanded and not FTreeItems[Pointer(FoldNestedGroup)].IsExpanded,
-    'single resource move preserves collapsed destination and ancestor groups');
-  FTreeItems[Pointer(DragOuterGroup)].IsExpanded := True;
-  FTreeItems[Pointer(FoldNestedGroup)].IsExpanded := True;
-  AssignToGroup(DragAlpha, nil, '');
-  DeferredRefresh(nil);
-  AssignToGroup(DragAlpha, nil, FoldNestedGroup.ID);
-  DeferredRefresh(nil);
-  Check(FTreeItems[Pointer(DragOuterGroup)].IsExpanded and FTreeItems[Pointer(FoldNestedGroup)].IsExpanded,
-    'single resource move preserves expanded destination and ancestor groups');
-
-  NewDocument;
-  AddObject('TLayout');
-  var GroupResource := FSelected;
-  GroupResource.Name := 'GroupResource';
-  var MultiGroupA := CreateStyleGroup('A', '');
-  var MultiGroupB := CreateStyleGroup('B', '');
-  FAssignments.AddOrSetValue(GroupResource.Name, MultiGroupA.ID);
-  RebuildTree;
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiGroupA)], []);
-  MultiTree.ChooseItem(FTreeItems[Pointer(MultiGroupB)], [ssCtrl]);
-  ObjectMenuOpening(nil);
-  Check((Length(SelectedTreeModels) = 2) and DeleteButton.Enabled and not CopyObjectButton.Enabled,
-    'multiple groups support deletion without exporting editor metadata as components');
-  ClearHistory;
-  DeleteSelection;
-  Check((FGroups.Count = 0) and (StyleResourceCount = 1) and (FAssignments.Count = 0) and (FUndo.Count = 1),
-    'batch group deletion preserves resources and clears assignments');
-  Undo(False);
-  Check((FGroups.Count = 2) and (StyleResourceCount = 1) and (FAssignments.Count = 1),
-    'undo restores deleted groups and resource membership');
-
-  NewDocument;
-  Check((ResourceTheme = rtLight) and (ResourceThemeBox.ItemIndex = 0), 'new document defaults to light resource theme');
-  AddObject('TRectangle');
-  FSelected.Name := 'ThemeTestRectangle';
-  FSelected.StyleName := 'themeteststyle';
-  var ThemeRectangle := TRectangle(FSelected);
-  AddTestValue('ThemeColor', 'Цвет', '#FFF0F0F0', 'Fill.Color');
-  FindValue('ThemeColor').DarkValue := '#FF202020';
-  AddTestValue('ThemeOpacity', 'Число', '0.9', 'Opacity');
-  FindValue('ThemeOpacity').DarkValue := '0.45';
-  AddTestValue('ThemeEnabled', 'Логическое', 'True', 'Enabled');
-  FindValue('ThemeEnabled').DarkValue := 'False';
-  AddObject('TText');
-  FSelected.Name := 'ThemeTestText';
-  var ThemeText := TText(FSelected);
-  AddTestValue('ThemeCaption', 'Текст', 'Light caption', 'Text');
-  FindValue('ThemeCaption').DarkValue := 'Dark caption';
-  var ThemeInteger := TNamedStyleValue.Create;
-  ThemeInteger.Name := 'ThemeInteger';
-  ThemeInteger.Kind := 'Целое';
-  ThemeInteger.LightValue := '10';
-  ThemeInteger.DarkValue := '20';
-  FValues.Add(ThemeInteger);
-  ClearHistory;
-  FBackgroundMode.ItemIndex := 0;
-  ResourceThemeBox.ItemIndex := 1;
-  Check((ResourceTheme = rtDark) and (ThemeRectangle.Fill.Color = $FF202020) and
-    (Abs(ThemeRectangle.Opacity - 0.45) < 0.001) and not ThemeRectangle.Enabled and
-    (ThemeText.Text = 'Dark caption') and (ThemeInteger.Value = '20') and (FBackgroundMode.ItemIndex = 1) and
-    (FBindings.Count = 4) and (FUndo.Count = 1), 'theme selector switches every resource kind and background as one undo');
-  Undo(False);
-  ThemeRectangle := TRectangle(FindNamedObject('ThemeTestRectangle'));
-  ThemeText := TText(FindNamedObject('ThemeTestText'));
-  Check((ResourceTheme = rtLight) and (ResourceThemeBox.ItemIndex = 0) and
-    (ThemeRectangle.Fill.Color = $FFF0F0F0) and (ThemeText.Text = 'Light caption') and (FBackgroundMode.ItemIndex = 0),
-    'undo restores light resource values and theme selector');
-  Undo(True);
-  ThemeRectangle := TRectangle(FindNamedObject('ThemeTestRectangle'));
-  ThemeText := TText(FindNamedObject('ThemeTestText'));
-  Check((ResourceTheme = rtDark) and (ThemeRectangle.Fill.Color = $FF202020) and (ThemeText.Text = 'Dark caption'),
-    'redo restores dark resource values');
-  FBackgroundMode.ItemIndex := 2;
-  ResourceTheme := rtLight;
-  Check((FBackgroundMode.ItemIndex = 2) and (ThemeRectangle.Fill.Color = $FFF0F0F0),
-    'theme switching preserves checkerboard background');
-  ResourceTheme := rtDark;
-  Check(FBackgroundMode.ItemIndex = 2, 'checkerboard remains selected in both resource themes');
-  FBackgroundMode.ItemIndex := 1;
-  ResourceTheme := rtLight;
-  Check(FBackgroundMode.ItemIndex = 0, 'light theme automatically selects light solid background');
-  SelectObject(ThemeRectangle);
-  ShowPreview;
-  ResourceTheme := rtDark;
-  Check(TRectangle(FPreviewBook.Style.FindStyleResource('themeteststyle')).Fill.Color = $FF202020,
-    'visible preview immediately switches to dark resource values');
-  CaptureDialog(Self, 'selftest-theme-dark.png');
-  ResourceTheme := rtLight;
-  Check(TRectangle(FPreviewBook.Style.FindStyleResource('themeteststyle')).Fill.Color = $FFF0F0F0,
-    'visible preview immediately switches back to light resource values');
-  CaptureDialog(Self, 'selftest-theme-light.png');
-  FPreview.Hide;
-  var ThemeHistoryCount := FUndo.Count;
-  ResourceTheme := rtLight;
-  Check(FUndo.Count = ThemeHistoryCount, 'selecting the current resource theme creates no history');
-  var ThemeCandidate := TNamedStyleValue.Create;
-  try
-    ThemeCandidate.Name := 'InvalidDark';
-    ThemeCandidate.Kind := 'Цвет';
-    ThemeCandidate.LightValue := '#FFFFFFFF';
-    ThemeCandidate.DarkValue := 'not a color';
-    var InvalidDarkRejected := False;
-    try
-      ValidateNamedValue(ThemeCandidate);
-    except
-      on E: Exception do
-        InvalidDarkRejected := True;
-    end;
-    Check(InvalidDarkRejected, 'inactive theme values are validated before saving or applying');
-  finally
-    ThemeCandidate.Free;
-  end;
-  ValuesDialog := TNamedValuesDialog.CreateEditor(Self);
-  try
-    Check((ValuesDialog.FGrid.Cells[2, 0] = '#FFF0F0F0') and (ValuesDialog.FGrid.Cells[3, 0] = '#FF202020'),
-      'resource dialog displays both theme values');
-    ValuesDialog.EditValue(nil, 2, 0, TValue.From<string>('#FFEEDDCC'));
-    ValuesDialog.EditValue(nil, 3, 0, TValue.From<string>('#FF111213'));
-    Check(ValuesDialog.IsChanged and (ValuesDialog.Values[0].LightValue = '#FFEEDDCC') and
-      (ValuesDialog.Values[0].DarkValue = '#FF111213') and (FindValue('ThemeColor').LightValue = '#FFF0F0F0') and
-      (FindValue('ThemeColor').DarkValue = '#FF202020'), 'editing both theme columns only changes the resource draft');
-    CaptureDialog(ValuesDialog, 'selftest-themed-values.png');
-  finally
-    ValuesDialog.Free;
-  end;
-  TThread.ForceQueue(nil,
-    procedure
-    begin
-      for var I := 0 to Screen.FormCount - 1 do
-        if Screen.Forms[I] is TNamedValuesDialog then
-        begin
-          var Dialog := TNamedValuesDialog(Screen.Forms[I]);
-          Dialog.EditValue(nil, 2, 0, TValue.From<string>('#FFEEDDCC'));
-          Dialog.EditValue(nil, 3, 0, TValue.From<string>('#FF111213'));
-          Dialog.ModalResult := mrOk;
-        end;
-    end);
-  ClearHistory;
-  EditNamedValues;
-  Check((FindValue('ThemeColor').LightValue = '#FFEEDDCC') and (FindValue('ThemeColor').DarkValue = '#FF111213') and
-    (ThemeRectangle.Fill.Color = $FFEEDDCC) and (FUndo.Count = 1), 'apply saves both theme values and applies the selected theme');
-  Undo(False);
-  Check((FindValue('ThemeColor').LightValue = '#FFF0F0F0') and (FindValue('ThemeColor').DarkValue = '#FF202020'),
-    'undo restores both edited theme values together');
-  ResourceTheme := rtDark;
-  var ThemeFile := System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-themes.style');
-  for var Format in [TStyleFormat.Indexed, TStyleFormat.Text] do
-  begin
-    SaveStyle(ThemeFile, Format);
-    LoadDocument(ThemeFile);
-    Check((ResourceTheme = rtDark) and (FindValue('ThemeColor').LightValue = '#FFF0F0F0') and
-      (FindValue('ThemeColor').DarkValue = '#FF202020') and (FindValue('ThemeCaption').DarkValue = 'Dark caption') and
-      (TRectangle(FindNamedObject('ThemeTestRectangle')).Fill.Color = $FF202020),
-      'both resource themes and active mode roundtrip: ' + Ord(Format).ToString);
-    ResourceTheme := rtLight;
-    Check(TText(FindNamedObject('ThemeTestText')).Text = 'Light caption', 'reloaded style can switch to the inactive saved theme');
-    ResourceTheme := rtDark;
-  end;
-  var InvalidThemeJSON := TJSONObject.ParseJSONValue(MetadataJSON) as TJSONObject;
-  try
-    InvalidThemeJSON.RemovePair('theme').Free;
-    InvalidThemeJSON.AddPair('theme', 'invalid');
-    TStyleTag(DesignerLayout(False).FindStyleResource('project')).TagString := InvalidThemeJSON.ToJSON;
-    var InvalidThemeStream := TFileStream.Create(ThemeFile, fmCreate);
-    try
-      TStyleStreaming.SaveToStream(FRoot, InvalidThemeStream, TStyleFormat.Indexed);
-    finally
-      InvalidThemeStream.Free;
-    end;
-  finally
-    InvalidThemeJSON.Free;
-  end;
-  var InvalidThemeHistory := FUndo.Count;
-  var InvalidThemeRejected := False;
-  try
-    LoadDocument(ThemeFile);
-  except
-    on E: Exception do
-      InvalidThemeRejected := True;
-  end;
-  Check(InvalidThemeRejected and (ResourceTheme = rtDark) and (ResourceThemeBox.ItemIndex = 1) and
-    (FindValue('ThemeColor').LightValue = '#FFF0F0F0') and (FindValue('ThemeColor').DarkValue = '#FF202020') and
-    (TRectangle(FindNamedObject('ThemeTestRectangle')).Fill.Color = $FF202020) and (FUndo.Count = InvalidThemeHistory),
-    'invalid saved theme restores the previous document, resource values and history');
-  var ThemeLegacyJSON := TJSONObject.ParseJSONValue(MetadataJSON) as TJSONObject;
-  try
-    ThemeLegacyJSON.RemovePair('version').Free;
-    ThemeLegacyJSON.AddPair('version', TJSONNumber.Create(2));
-    ThemeLegacyJSON.RemovePair('theme').Free;
-    for var Item in ThemeLegacyJSON.GetValue<TJSONArray>('values') do
-    begin
-      TJSONObject(Item).AddPair('value', Item.GetValue<string>('dark'));
-      TJSONObject(Item).RemovePair('light').Free;
-      TJSONObject(Item).RemovePair('dark').Free;
-    end;
-    TStyleTag(DesignerLayout(False).FindStyleResource('project')).TagString := ThemeLegacyJSON.ToJSON;
-    var ThemeLegacyStream := TFileStream.Create(ThemeFile, fmCreate);
-    try
-      TStyleStreaming.SaveToStream(FRoot, ThemeLegacyStream, TStyleFormat.Indexed);
-    finally
-      ThemeLegacyStream.Free;
-    end;
-  finally
-    ThemeLegacyJSON.Free;
-  end;
-  LoadDocument(ThemeFile);
-  Check((ResourceTheme = rtLight) and (FindValue('ThemeColor').DarkValue = '#FF202020') and
-    (FindValue('ThemeColor').LightValue = '#FF202020') and (FindValue('ThemeCaption').DarkValue = 'Dark caption') and
-    (FindValue('ThemeCaption').LightValue = 'Dark caption'),
-    'version 2 migration stores old values in dark theme and copies them to default light theme');
-  SaveStyle(ThemeFile, TStyleFormat.Indexed);
-  LoadDocument(ThemeFile);
-  Check((FindValue('ThemeInteger').LightValue = '20') and (FindValue('ThemeInteger').DarkValue = '20'),
-    'migrated theme values persist in version 3 metadata');
-  TFile.Delete(ThemeFile);
-  NewDocument;
-  AddObject('TLayout');
-  var ClassResource := FSelected;
-  ClassResource.StyleName := 'editstyle2';
-  AddObject('TText');
-  var ClassElement := FSelected;
-  ClassElement.StyleName := 'text';
-  Check(DetectStyleClass(ClassResource) = 'TEdit', 'preview detects class from indexed default style name');
-  SelectObject(ClassElement);
-  ObjectMenuOpening(nil);
-  Check(not StyleClassButton.Enabled and not AutoStyleClassButton.Enabled, 'class assignment menu excludes nested style elements');
-  var ClassScopeRejected := False;
-  var BeforeScopeUndo := FUndo.Count;
-  try
-    AssignStyleClass(ClassElement, 'TEdit');
-  except
-    on E: Exception do
-      ClassScopeRejected := True;
-  end;
-  Check(ClassScopeRejected and (FUndo.Count = BeforeScopeUndo), 'class assignment rejects nested elements without history');
-  SelectObject(ClassResource);
-  ClearHistory;
-  AssignStyleClass(ClassResource, 'TCheckBox');
-  Check((AssignedStyleClass(ClassResource) = 'TCheckBox') and (FUndo.Count = 1), 'style class assignment records one undo');
-  Undo(False);
-  ClassResource := FindStyleRoot('editstyle2');
-  Check(AssignedStyleClass(ClassResource).IsEmpty, 'undo removes style class assignment');
-  Undo(True);
-  ClassResource := FindStyleRoot('editstyle2');
-  Check(AssignedStyleClass(ClassResource) = 'TCheckBox', 'redo restores style class assignment');
-  ClassResource.StyleName := 'unrelatedstyle';
-  Check(DetectStyleClass(ClassResource) = 'TCheckBox', 'explicit class takes priority over resource name and survives rename');
-  SelectObject(ClassResource);
-  ObjectMenuOpening(nil);
-  Check(StyleClassButton.Enabled and AutoStyleClassButton.Enabled, 'root resource exposes assignment and automatic mode');
-  ShowPreview;
-  var InteractivePreview := TPreviewForm(FPreview);
-  Check((InteractivePreview.PreviewControl is TCheckBox) and
-    (InteractivePreview.Inspector.InspectedObject = InteractivePreview.PreviewControl), 'assigned class selected when preview opens');
-  Check((FPreview.StyleBook = StyleBook) and
-    (InteractivePreview.PreviewControl.Scene.StyleBook = FPreviewBook), 'preview isolates edited styles from its class list and inspector');
-  var BeforePreviewProperties := Snapshot;
-  var BeforePreviewUndo := FUndo.Count;
-  var PreviewViewport := InteractivePreview.SelectedControlHost;
-  var PreviewCenter := PreviewViewport.AbsoluteToLocal(
-    InteractivePreview.PreviewControl.LocalToAbsolute(InteractivePreview.PreviewControl.LocalRect.CenterPoint));
-  Check((InteractivePreview.ZoomPercent = 100) and
-    (PreviewCenter.Distance(PreviewViewport.LocalRect.CenterPoint) < 0.1), 'preview defaults to 100 percent and centered');
-  var PreviewAnchor := PointF(PreviewViewport.Width * 0.3, PreviewViewport.Height * 0.4);
-  var PreviewLocalAnchor := InteractivePreview.PreviewControl.AbsoluteToLocal(PreviewViewport.LocalToAbsolute(PreviewAnchor));
-  InteractivePreview.ZoomAt(PreviewAnchor, 60);
-  Check(InteractivePreview.ZoomPercent = 100, 'preview accumulates partial wheel delta');
-  InteractivePreview.ZoomAt(PreviewAnchor, 60);
-  var PreviewAnchorAfter := PreviewViewport.AbsoluteToLocal(InteractivePreview.PreviewControl.LocalToAbsolute(PreviewLocalAnchor));
-  Check((InteractivePreview.ZoomPercent = 110) and (PreviewAnchorAfter.Distance(PreviewAnchor) < 0.1),
-    'preview wheel zoom preserves point under cursor');
-  InteractivePreview.ViewZoom.ItemIndex := InteractivePreview.ViewZoom.Items.IndexOf('2000%');
-  InteractivePreview.ZoomAt(PreviewAnchor, 120);
-  Check(InteractivePreview.ZoomPercent = 2000, 'preview limits maximum zoom');
-  InteractivePreview.ViewZoom.ItemIndex := InteractivePreview.ViewZoom.Items.IndexOf('50%');
-  InteractivePreview.ZoomAt(PreviewAnchor, -120);
-  Check(InteractivePreview.ZoomPercent = 50, 'preview limits minimum zoom');
-  InteractivePreview.ResetView;
-  // Start over the tested control, so navigation must precede control input.
-  var PreviewPanStart := InteractivePreview.PreviewControl.LocalToAbsolute(InteractivePreview.PreviewControl.LocalRect.CenterPoint);
-  InteractivePreview.MouseDown(TMouseButton.mbMiddle, [ssMiddle], PreviewPanStart.X, PreviewPanStart.Y);
-  InteractivePreview.MouseMove([ssMiddle], PreviewPanStart.X + 1200, PreviewPanStart.Y - 900);
-  InteractivePreview.MouseUp(TMouseButton.mbMiddle, [], PreviewPanStart.X + 1200, PreviewPanStart.Y - 900);
-  var PreviewPannedCenter := PreviewViewport.AbsoluteToLocal(
-    InteractivePreview.PreviewControl.LocalToAbsolute(InteractivePreview.PreviewControl.LocalRect.CenterPoint));
-  Check((PreviewPannedCenter.Distance(PreviewCenter + PointF(1200, -900)) < 0.1) and
-    not TCheckBox(InteractivePreview.PreviewControl).IsChecked and (InteractivePreview.Cursor = crDefault),
-    'preview middle mouse pans outside viewport without activating control');
-  InteractivePreview.CenterViewClick(nil);
-  PreviewCenter := PreviewViewport.AbsoluteToLocal(
-    InteractivePreview.PreviewControl.LocalToAbsolute(InteractivePreview.PreviewControl.LocalRect.CenterPoint));
-  Check(PreviewCenter.Distance(PreviewViewport.LocalRect.CenterPoint) < 0.1, 'preview center button resets pan');
-  var PreviewWidth := InteractivePreview.ClientWidth;
-  InteractivePreview.ClientWidth := PreviewWidth + 80;
-  Application.ProcessMessages;
-  PreviewCenter := PreviewViewport.AbsoluteToLocal(
-    InteractivePreview.PreviewControl.LocalToAbsolute(InteractivePreview.PreviewControl.LocalRect.CenterPoint));
-  Check(PreviewCenter.Distance(PreviewViewport.LocalRect.CenterPoint) < 0.1, 'preview remains centered after resize');
-  InteractivePreview.ClientWidth := PreviewWidth;
-  InteractivePreview.ViewZoom.ItemIndex := InteractivePreview.ViewZoom.Items.IndexOf('200%');
-  InteractivePreview.Hide;
-  InteractivePreview.Show;
-  PreviewCenter := PreviewViewport.AbsoluteToLocal(
-    InteractivePreview.PreviewControl.LocalToAbsolute(InteractivePreview.PreviewControl.LocalRect.CenterPoint));
-  Check((InteractivePreview.ZoomPercent = 100) and
-    (PreviewCenter.Distance(PreviewViewport.LocalRect.CenterPoint) < 0.1), 'preview reopening resets zoom and center');
-  InteractivePreview.MouseDown(TMouseButton.mbMiddle, [ssMiddle], PreviewPanStart.X, PreviewPanStart.Y);
-  InteractivePreview.Deactivate;
-  var PreviewPosition := InteractivePreview.PreviewControl.Position.Point;
-  InteractivePreview.MouseMove([ssMiddle], PreviewPanStart.X + 40, PreviewPanStart.Y + 20);
-  Check((InteractivePreview.Cursor = crDefault) and (InteractivePreview.PreviewControl.Position.Point = PreviewPosition),
-    'preview deactivation ends pan');
-  Check(SameSnapshot(BeforePreviewProperties, Snapshot) and (FUndo.Count = BeforePreviewUndo),
-    'preview navigation preserves document and history');
-  InteractivePreview.Inspector.WriteProperty('IsChecked', 'True');
-  Check(TCheckBox(InteractivePreview.PreviewControl).IsChecked, 'preview inspector changes live control state');
-  Check(SameSnapshot(BeforePreviewProperties, Snapshot) and (FUndo.Count = BeforePreviewUndo),
-    'preview property changes do not modify style or document history');
-  InteractivePreview.SelectClass('TEdit');
-  RefreshPreview(nil);
-  Check((InteractivePreview.PreviewControl is TEdit) and (AssignedStyleClass(ClassResource) = 'TCheckBox'),
-    'temporary preview class selection retains saved assignment');
-  InteractivePreview.Inspector.WriteProperty('Text', 'Preview edit');
-  Check(TEdit(InteractivePreview.PreviewControl).Text = 'Preview edit', 'preview inspector edits input text');
-  InteractivePreview.PreviewControl.Enabled := False;
-  InteractivePreview.ControlChanged(InteractivePreview.PreviewControl);
-  Check(InteractivePreview.Inspector.ValueText(InteractivePreview.Inspector.FindProperty('Enabled')) = 'False',
-    'preview inspector refreshes control state');
-  for var GridClass in ['TGrid', 'TStringGrid'] do
-  begin
-    InteractivePreview.SelectClass(GridClass);
-    InteractivePreview.CreateControl('');
-    var SampleGrid := TCustomGrid(InteractivePreview.PreviewControl);
-    Check((SampleGrid.ColumnCount = 12) and (SampleGrid.RowCount = 20) and
-      (SampleGrid.Images.Count = 6), GridClass + ' preview initializes all concrete column types and icons');
-    Check((SampleGrid.Columns[0] is TStringColumn) and (SampleGrid.Columns[1] is TCheckColumn) and
-      (SampleGrid.Columns[2] is TIntegerColumn) and (SampleGrid.Columns[3] is TFloatColumn) and
-      (SampleGrid.Columns[4] is TCurrencyColumn) and (SampleGrid.Columns[5] is TDateColumn) and
-      (SampleGrid.Columns[6] is TTimeColumn) and (SampleGrid.Columns[7] is TDateTimeColumn) and
-      (SampleGrid.Columns[8] is TProgressColumn) and (SampleGrid.Columns[9] is TPopupColumn) and
-      (SampleGrid.Columns[10] is TImageColumn) and (SampleGrid.Columns[11] is TGlyphColumn),
-      GridClass + ' preview includes date-time, numeric, image and glyph columns');
-    var SampleText := SampleGrid.Model.GetValue(0, 0, False);
-    Check(not SampleText.IsEmpty and (SampleGrid.Model.GetValue(0, 0, True).AsString = SampleText.AsString),
-      GridClass + ' random samples remain stable across redraws');
-    for var SampleRow := 0 to SampleGrid.RowCount - 1 do
-    begin
-      Check(not SampleGrid.Model.GetValue(9, SampleRow, False).IsEmpty and
-        (TPopupColumn(SampleGrid.Columns[9]).Items.IndexOf(SampleGrid.Model.GetValue(9, SampleRow, False).AsString) >= 0),
-        GridClass + ' popup sample belongs to its choices');
-      var IconIndex := TGlyphColumn(SampleGrid.Columns[11]).GetImageIndex(SampleGrid.Model.GetValue(11, SampleRow, False));
-      Check((IconIndex >= 0) and (IconIndex < SampleGrid.Images.Count) and SampleGrid.Images.BitmapExists(IconIndex),
-        GridClass + ' glyph sample points to a real bitmap');
-    end;
-    if SampleGrid is TGrid then
-    begin
-      Check(SampleGrid.Model.GetValue(1, 0, False).IsType<Boolean> and
-        SampleGrid.Model.GetValue(2, 0, False).IsType<Integer> and
-        SampleGrid.Model.GetValue(4, 0, False).IsType<Currency> and
-        SampleGrid.Model.GetValue(5, 0, False).IsType<TDateTime> and
-        SampleGrid.Model.GetValue(10, 0, False).IsType<TBitmap>, 'grid samples retain native value types');
-      TGrid(SampleGrid).OnSetValue(SampleGrid, 0, 0, 'Edited sample');
-      Check(SampleGrid.Model.GetValue(0, 0, True).AsString = 'Edited sample',
-        'grid retains edited cell values after cache invalidation');
-      CaptureDialog(FPreview, 'selftest-preview-grid.png');
-    end
-    else
-    begin
-      TStringGrid(SampleGrid).Cells[0, 0] := 'Edited sample';
-      Check(SampleGrid.Model.GetValue(0, 0, False).AsString = 'Edited sample', 'string grid uses editable Cells storage');
-      SampleGrid.LeftColumn := 10;
-      CaptureDialog(FPreview, 'selftest-preview-stringgrid-images.png');
-    end;
-    Check((InteractivePreview.ZoomPercent = 100) and SameSnapshot(BeforePreviewProperties, Snapshot) and
-      (FUndo.Count = BeforePreviewUndo), GridClass + ' samples preserve the document and default preview zoom');
-  end;
-  InteractivePreview.ClassSearch.Text := 'tcustom';
-  Check((InteractivePreview.ClassList.Count = 0) and (InteractivePreview.PreviewControl = nil) and
-    (InteractivePreview.Inspector.InspectedObject = nil), 'preview search excludes custom bases and clears empty inspector');
-  InteractivePreview.ClassSearch.Text := 'tcheckb';
-  Check((InteractivePreview.ClassList.Count = 1) and (InteractivePreview.PreviewControl is TCheckBox),
-    'preview class search is case insensitive');
-  InteractivePreview.SelectClass('TEdit');
-  RefreshPreview(nil);
-  InteractivePreview.AssignClassClick(InteractivePreview.AssignClassButton);
-  Check(AssignedStyleClass(ClassResource) = 'TEdit', 'preview assign button saves selected class');
-  FPreview.Hide;
-  for var Format in [TStyleFormat.Binary, TStyleFormat.Indexed] do
-  begin
-    var ClassFile := System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'selftest-class-assignment.style');
-    SaveStyle(ClassFile, Format);
-    LoadDocument(ClassFile);
-    ClassResource := FindStyleRoot('unrelatedstyle');
-    Check(AssignedStyleClass(ClassResource) = 'TEdit', 'assigned class persists in style format ' + Ord(Format).ToString);
-    TFile.Delete(ClassFile);
-  end;
-  SelectObject(ClassResource);
-  DuplicateObject;
-  Check((AssignedStyleClass(FSelected) = 'TEdit') and (FSelected.Name <> ClassResource.Name),
-    'duplicate resource retains class with separate metadata target');
-  DeleteSelection;
-  Check(AssignedStyleClass(ClassResource) = 'TEdit', 'deleting duplicate preserves original class assignment');
-  Undo(False);
-  Check(AssignedStyleClass(FindStyleRoot('unrelatedstyle_copy')) = 'TEdit', 'undo deletion restores class assignment');
-  ClassResource := FindStyleRoot('unrelatedstyle');
-  SelectObject(ClassResource);
-  AssignStyleClass(ClassResource, '');
-  Check(AssignedStyleClass(ClassResource).IsEmpty, 'automatic mode clears explicit assignment');
-  ShowPreview;
-  Check(InteractivePreview.SelectedClass = DetectStyleClass(ClassResource), 'opening unassigned style chooses detected class');
-  CaptureDialog(FPreview, 'selftest-preview-inspector.png');
-  FPreview.Hide;
-  NewDocument;
-  Check(FStyleClasses.Count = 0, 'new document clears assigned style classes');
-  var Catalog := TStyleCatalog.Create;
-  try
-    Check(Catalog.Definitions.Count = 168, 'style reference contains all documented controls and color item contract');
-    Check(Catalog.Find(' tbutton ') = Catalog.Find('TButton'), 'catalogue class lookup ignores case and whitespace');
-    var ButtonDefinition := Catalog.Find('TButton');
-    var HasButtonText := False;
-    var HasButtonGlyph := False;
-    for var Part in ButtonDefinition.Parts do
-    begin
-      if SameText(Part.Name, 'text') then
-        HasButtonText := Part.Examples.Contains('TText') and Part.DeclaredIn.Contains('TPresentedTextControl');
-      if SameText(Part.Name, 'glyphstyle') then
-        HasButtonGlyph := Part.Examples.Contains('TGlyph');
-    end;
-    Check(HasButtonText and HasButtonGlyph, 'reference includes inherited button text and glyph class contracts');
-    Check(Catalog.Find('TComboTrackBar').DefaultStyleName = 'comboeditstyle', 'combotrackbar default style override');
-    Check(Catalog.Find('TCalendarEdit').DefaultNote.Contains('InputSupport'), 'conditional default style names documented');
-    var StyleUsers := TStringList.Create;
-    try
-      for var StyleName in ['dayitemstyle', 'calendarlabelstyle'] do
-      begin
-        Catalog.ControlsUsingStyle(StyleName.ToUpper, StyleUsers);
-        Check((StyleUsers.IndexOf('TCalendar') >= 0) and (StyleUsers.IndexOf('TStyledCalendar') >= 0),
-          'code-created calendar dependencies include their owner ' + StyleName);
-      end;
-      Catalog.ControlsUsingStyle('spinleftbutton', StyleUsers);
-      Check(StyleUsers.IndexOf('TTabControl') >= 0, 'runtime array names identify tab scrolling controls');
-      Catalog.ControlsUsingStyle('listitemdeletebutton', StyleUsers);
-      Check((StyleUsers.IndexOf('TListView') >= 0) and (StyleUsers.IndexOf('TListViewBase') >= 0),
-        'runtime references are inherited by public controls');
-      Catalog.ControlsUsingStyle('comboeditstyle', StyleUsers);
-      Check(StyleUsers.IndexOf('TCalendarEdit') >= 0, 'conditional InputSupport style identifies CalendarEdit');
-      Catalog.ControlsUsingStyle('menuseparatorstyle', StyleUsers);
-      Check(StyleUsers.IndexOf('TMenuItem') >= 0, 'conditional separator style identifies MenuItem');
-      Catalog.ControlsUsingStyle('pushpanel', StyleUsers);
-      Check(StyleUsers.IndexOf('TMultiView') >= 0, 'runtime presentation style identifies MultiView');
-      Catalog.ControlsUsingStyle('', StyleUsers);
-      Check(StyleUsers.Count = 0, 'empty style names do not match presentations without defaults');
-      Catalog.ControlsUsingStyle('unknown_custom_style', StyleUsers);
-      Check(StyleUsers.Count = 0, 'unknown styles do not infer arbitrary framework classes');
-    finally
-      StyleUsers.Free;
-    end;
-    for var ClassName in ['TButton', 'TEdit', 'TComboTrackBar', 'TCalendarEdit', 'TMaskEdit', 'TGrid', 'TColorListBox', 'THueTrackBar', 'TSkLabel', 'TVertScrollBox'] do
-    begin
-      var Control := TStyledControl(FClasses[ClassName].Create(nil));
-      try
-        SetModelDesigning(Control);
-        Check(SameText(Control.DefaultStyleLookupName, Catalog.Find(ClassName).DefaultStyleName),
-          'catalogue default agrees with FMX ' + ClassName);
-      finally
-        Control.Free;
-      end;
-    end;
-    for var Entry in Catalog.Definitions do
-    begin
-      if Entry.DefaultStyleName.IsEmpty then
-        Continue;
-      var Plan := Catalog.BuildTemplate(Entry, Entry.DefaultStyleName, nil);
-      var Required := TStringList.Create;
-      try
-        Required.CaseSensitive := False;
-        Catalog.RequiredStyles(Entry, Required);
-        Check(Plan.Resources.Count = Required.Count, 'template covers transitive dependencies for ' + Entry.ClassName);
-        var Found := TStringList.Create;
-        try
-          Found.CaseSensitive := False;
-          for var Obj in Plan.Resources do
-          begin
-            Check(Found.IndexOf(Obj.StyleName) < 0, 'no duplicated planned style ' + Entry.ClassName + '/' + Obj.StyleName);
-            Found.Add(Obj.StyleName);
-          end;
-          for var Name in Required do
-            Check(Found.IndexOf(Name) >= 0, 'required template resource exists ' + Entry.ClassName + '/' + Name);
-        finally
-          Found.Free;
-        end;
-      finally
-        Required.Free;
-        Plan.Free;
-      end;
-    end;
-    NewDocument;
-    ClearHistory;
-    var Existing := TLayout.Create(nil);
-    Existing.StyleName := 'BUTTONSTYLE';
-    Existing.Parent := FRoot;
-    Changed;
-    ClearHistory;
-    var BeforeTemplate := Snapshot;
-    CreateStyleTemplate(Catalog, Catalog.Find('TCalendar'));
-    Check(FindStyleRoot('buttonstyle') = Existing, 'template reuses existing dependency without replacement');
-    Check((FindStyleRoot('calendarstyle') = FSelected) and (FGroups.Count = 1), 'calendar template creates main style and group');
-    Check(GroupOf(Existing).IsEmpty, 'existing dependencies retain original group');
-    var CalendarGroup := GroupOf(FSelected);
-    Check(not CalendarGroup.IsEmpty, 'main template assigned to composite group');
-    for var Obj in ChildrenOf(FRoot) do
-      if (Obj <> Existing) and not SameText(Obj.StyleName, '#designer') then
-        Check(GroupOf(Obj) = CalendarGroup, 'new dependent style belongs to template group');
-    Check(FUndo.Count = 1, 'whole template is one undo action');
-    UpdateDesignerMetadata;
-    var TemplateMetadata := MetadataJSON;
-    var TemplateCount := StyleResourceCount;
-    Undo(False);
-    Check(SameSnapshot(BeforeTemplate, Snapshot), 'undo restores complete book before template including metadata');
-    Undo(True);
-    Check(TemplateMetadata = MetadataJSON, 'redo restores group metadata');
-    Check(TemplateCount = StyleResourceCount, 'redo restores resource count');
-    Check(FindStyleRoot('calendarstyle').FindStyleResource('days') is TListBox,
-      'redo restores typed calendar parts');
-    CreateStyleTemplate(Catalog, Catalog.Find('TCalendar'));
-    Check(FindStyleRoot('calendarstyle2') = FSelected, 'main style is always created with numeric suffix on collision');
-    var ButtonCount := 0;
-    for var Obj in ChildrenOf(FRoot) do
-      if SameText(Obj.StyleName, 'buttonstyle') then
-        Inc(ButtonCount);
-    Check(ButtonCount = 1, 'shared dependencies are not duplicated by repeated templates');
-    var Dialog := TStyleCatalogDialog.CreateCatalog(Self, Catalog,
-      function(Name: string): Boolean
-      begin
-        Result := FindStyleRoot(Name) <> nil;
-      end, 'TEdit');
-    try
-      Check((Dialog.Definition = Catalog.Find('TEdit')) and Dialog.CreateButton.Enabled,
-        'catalogue dialog loads from FMX and selects initial class');
-      Check(Dialog.InfoMemo.Text.Contains('editstyle'), 'reference displays default style name');
-      Dialog.SearchEdit.Text := 'tcombOtrack';
-      Dialog.FilterClasses(nil);
-      Check((Dialog.ClassList.Count = 1) and (Dialog.Definition = Catalog.Find('TComboTrackBar')),
-        'class search filters case insensitively');
-      Dialog.SearchEdit.Text := 'no_such_fmx_class';
-      Dialog.FilterClasses(nil);
-      Check((Dialog.ClassList.Count = 0) and not Dialog.CreateButton.Enabled and (Dialog.PartsGrid.RowCount = 0),
-        'empty reference search clears details and disables template creation');
-      Dialog.SearchEdit.Text := 'TCalendar';
-      Dialog.FilterClasses(nil);
-      Dialog.ClassList.ItemIndex := 0;
-      Dialog.SelectClass(nil);
-      CaptureDialog(Dialog, 'selftest-style-catalog.png');
-      Check(Dialog.PartsGrid.Height > 120, 'style reference keeps parts table visible');
-      Check(Dialog.CreateButton.Position.X < Dialog.CloseButton.Position.X,
-        'style reference places the safe close action at the right');
-    finally
-      Dialog.Free;
-    end;
-  finally
-    Catalog.Free;
-  end;
-  for var Theme in ['Dark', 'Light'] do
-  begin
-    var UsageStyleFile := System.IOUtils.TPath.Combine(GetCurrentDir, 'DelphiWinUI3\Style\WinUI3_' + Theme + '.style');
-    if not TFile.Exists(UsageStyleFile) then
-      Continue;
-    LoadDocument(UsageStyleFile);
-    var RealDaysStyle := FindStyleRoot('days_itemstyle');
-    Check(RealDaysStyle <> nil, 'WinUI3 ' + Theme + ' contains the runtime calendar day style');
-    SelectObject(RealDaysStyle);
-    ClearHistory;
-    var BeforeRealUsageMenu := Snapshot;
-    ObjectMenuOpening(nil);
-    Check((MenuReference(UsedInButton, 'calendarstyle') <> nil) and
-      (MenuReference(UsedInButton, 'calendarstyle_sized') <> nil) and
-      (MenuClass('TCalendar') <> nil) and (MenuClass('TDayItem') <> nil),
-      'WinUI3 ' + Theme + ' runtime day style identifies both calendar resources and Calendar class');
-    Check(SameSnapshot(BeforeRealUsageMenu, Snapshot) and (FUndo.Count = 0) and not FDirty,
-      'WinUI3 ' + Theme + ' usage inspection preserves the book');
-  end;
-  NewDocument;
-  Check((ResourceTheme = rtLight) and (ResourceThemeBox.ItemIndex = 0), 'new document resets resource theme after dark-mode editing');
-  FDirty := False;
 end;
 
 end.

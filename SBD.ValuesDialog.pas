@@ -6,7 +6,8 @@ uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Rtti,
   System.Math, System.Generics.Collections, FMX.Types, FMX.Controls, FMX.Forms,
   SBD.Dialogs, FMX.Layouts, FMX.StdCtrls, FMX.ListBox, FMX.Grid, FMX.Grid.Style,
-  FMX.Dialogs, FMX.Controls.Presentation, FMX.Consts, SBD.Main, FMX.ScrollBox;
+  FMX.Dialogs, FMX.Controls.Presentation, FMX.Consts, SBD.StyleDocument,
+  SBD.EditorTypes, FMX.ScrollBox;
 
 type
   TNamedValuesDialog = class(TAppDialogForm)
@@ -33,14 +34,14 @@ type
     procedure ResourceAction(Sender: TObject);
     procedure ValueDblClick(Sender: TObject);
   private
-    FEditor: TFormMain;
+    FDocument: TStyleDocument;
     FUpdating: Boolean;
     FValues: TObjectList<TNamedStyleValue>;
     FBindings: TObjectList<TStyleValueBinding>;
     function FindValue(const Name: string): TNamedStyleValue;
     procedure UpdateGrid;
   public
-    constructor CreateEditor(Editor: TFormMain);
+    constructor CreateEditor(Owner: TCustomForm; Document: TStyleDocument);
     destructor Destroy; override;
     function IsChanged: Boolean;
     property Values: TObjectList<TNamedStyleValue> read FValues;
@@ -66,30 +67,30 @@ begin
     Result := '0';
 end;
 
-constructor TNamedValuesDialog.CreateEditor(Editor: TFormMain);
+constructor TNamedValuesDialog.CreateEditor(Owner: TCustomForm; Document: TStyleDocument);
 begin
   FUpdating := True;
-  inherited Create(Editor);
+  inherited Create(Owner);
   TranslateForm(Self);
   for var I := 0 to FKind.Items.Count - 1 do
     FKind.Items[I] := Translate(FKind.Items[I]);
   for var I := 0 to KindColumn.Items.Count - 1 do
     KindColumn.Items[I] := Translate(KindColumn.Items[I]);
   EnableSmoothScrolling(Self);
-  FEditor := Editor;
+  FDocument := Document;
   FValues := TObjectList<TNamedStyleValue>.Create;
   FBindings := TObjectList<TStyleValueBinding>.Create;
-  for var Source in Editor.NamedValues do
+  for var Source in Document.NamedValues do
   begin
     var Copy := TNamedStyleValue.Create;
     Copy.Name := Source.Name;
     Copy.Kind := Source.Kind;
     Copy.LightValue := Source.LightValue;
     Copy.DarkValue := Source.DarkValue;
-    Copy.Theme := Editor.ResourceTheme;
+    Copy.Theme := Document.ResourceTheme;
     FValues.Add(Copy);
   end;
-  for var Source in Editor.ValueBindings do
+  for var Source in Document.ValueBindings do
   begin
     var Copy := TStyleValueBinding.Create;
     Copy.TargetName := Source.TargetName;
@@ -97,7 +98,7 @@ begin
     Copy.ResourceName := Source.ResourceName;
     FBindings.Add(Copy);
   end;
-  StyleBook := Editor.StyleBook;
+  StyleBook := Owner.StyleBook;
   FGrid.OnSetValue := EditValue;
   FGrid.OnDblClick := ValueDblClick;
   UpdateGrid;
@@ -127,18 +128,18 @@ end;
 function TNamedValuesDialog.IsChanged: Boolean;
 begin
   Result := True;
-  if (FValues.Count <> FEditor.NamedValues.Count) or (FBindings.Count <> FEditor.ValueBindings.Count) then
+  if (FValues.Count <> FDocument.NamedValues.Count) or (FBindings.Count <> FDocument.ValueBindings.Count) then
     Exit;
   for var I := 0 to FValues.Count - 1 do
-    if (FValues[I].Name <> FEditor.NamedValues[I].Name) or
-      (FValues[I].Kind <> FEditor.NamedValues[I].Kind) or
-      (FValues[I].LightValue <> FEditor.NamedValues[I].LightValue) or
-      (FValues[I].DarkValue <> FEditor.NamedValues[I].DarkValue) then
+    if (FValues[I].Name <> FDocument.NamedValues[I].Name) or
+      (FValues[I].Kind <> FDocument.NamedValues[I].Kind) or
+      (FValues[I].LightValue <> FDocument.NamedValues[I].LightValue) or
+      (FValues[I].DarkValue <> FDocument.NamedValues[I].DarkValue) then
       Exit;
   for var I := 0 to FBindings.Count - 1 do
-    if (FBindings[I].TargetName <> FEditor.ValueBindings[I].TargetName) or
-      (FBindings[I].PropertyPath <> FEditor.ValueBindings[I].PropertyPath) or
-      (FBindings[I].ResourceName <> FEditor.ValueBindings[I].ResourceName) then
+    if (FBindings[I].TargetName <> FDocument.ValueBindings[I].TargetName) or
+      (FBindings[I].PropertyPath <> FDocument.ValueBindings[I].PropertyPath) or
+      (FBindings[I].ResourceName <> FDocument.ValueBindings[I].ResourceName) then
       Exit;
   Result := False;
 end;
@@ -185,7 +186,7 @@ begin
     Candidate.Kind := Resource.Kind;
     Candidate.LightValue := Resource.LightValue;
     Candidate.DarkValue := Resource.DarkValue;
-    Candidate.Theme := FEditor.ResourceTheme;
+    Candidate.Theme := FDocument.ResourceTheme;
     case Col of
       0:
         Candidate.Name := Trim(Value.ToString);
@@ -201,13 +202,13 @@ begin
         Candidate.DarkValue := Value.ToString;
     end;
     try
-      FEditor.ValidateNamedValue(Candidate);
+      FDocument.ValidateNamedValue(Candidate);
       for var Other in FValues do
         if (Other <> Resource) and SameText(Other.Name, Candidate.Name) then
           raise Exception.Create(Translate('Ресурс с таким именем уже существует.'));
       for var Binding in FBindings do
         if SameText(Binding.ResourceName, Resource.Name) then
-          FEditor.ValidateBinding(Candidate, Binding);
+          FDocument.ValidateBinding(Candidate, Binding);
       for var Binding in FBindings do
         if SameText(Binding.ResourceName, Resource.Name) then
           Binding.ResourceName := Candidate.Name;
@@ -246,7 +247,7 @@ begin
         Resource.Name := Name;
         Resource.Kind := CanonicalValueKind(FKind.Items[FKind.ItemIndex]);
         Resource.Value := DefaultNamedValue(Resource.Kind);
-        Resource.Theme := FEditor.ResourceTheme;
+        Resource.Theme := FDocument.ResourceTheme;
         FValues.Add(Resource);
       end;
     2:

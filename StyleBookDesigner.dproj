@@ -340,6 +340,11 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="SBD.EditorTypes.pas"/>
+        <DCCReference Include="SBD.StyleDocument.pas"/>
+        <DCCReference Include="SBD.StyleIO.pas"/>
+        <DCCReference Include="SBD.StyleProperties.pas"/>
+        <DCCReference Include="SBD.StyleTree.pas"/>
         <DCCReference Include="SBD.Localization.pas"/>
         <DCCReference Include="SBD.Dialogs.pas"/>
         <DCCReference Include="SBD.StyleCatalog.pas"/>
@@ -375,12 +380,8 @@
             <Form>GradientEditorForm</Form>
             <FormType>fmx</FormType>
         </DCCReference>
-        <DCCReference Include="SBD.ColorDialog.pas">
-            <Form>ColorEditorForm</Form>
-            <FormType>fmx</FormType>
-        </DCCReference>
+        <DCCReference Include="SBD.ColorDialog.pas"/>
         <DCCReference Include="SBD.PropertyInspector.pas"/>
-        <DCCReference Include="SBD.PropertyInspector.Tests.pas"/>
         <DCCReference Include="DelphiWinUI3\Fixes\D13\FMX.Menus.pas"/>
         <DCCReference Include="DelphiWinUI3\Fixes\D13\FMX.Platform.Win.pas"/>
         <DCCReference Include="DelphiWinUI3\Fixes\D13\FMX.StyledContextMenu.pas"/>

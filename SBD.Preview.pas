@@ -86,8 +86,8 @@ type
 implementation
 
 uses
-  SBD.Main, FMX.Consts, FMX.Memo, FMX.TreeView, FMX.TabControl, FMX.Header,
-  FMX.Grid.Style, FMX.ImgList, FMX.ScrollBox, SBD.Localization;
+  FMX.Consts, FMX.Memo, FMX.TreeView, FMX.TabControl, FMX.Header, FMX.Grid.Style,
+  FMX.ImgList, FMX.ScrollBox, SBD.Localization;
 
 {$R *.fmx}
 

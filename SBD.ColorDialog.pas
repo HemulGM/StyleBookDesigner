@@ -3,35 +3,14 @@
 interface
 
 uses
-  System.SysUtils, System.Types, System.UITypes, System.Classes, System.Rtti,
-  System.Math, FMX.Types, FMX.Controls, FMX.Forms, SBD.Dialogs, FMX.Layouts,
-  FMX.StdCtrls, FMX.ListBox, FMX.Grid, FMX.Grid.Style, FMX.Dialogs,
-  FMX.Controls.Presentation, FMX.Memo, FMX.ScrollBox, FMX.Colors;
-
-type
-  TColorEditorForm = class(TAppDialogForm)
-    DialogHeader: TLayout;
-    DialogTitle: TLabel;
-    HelpLabel: TLabel;
-    Actions: TPanel;
-    CancelButton: TButton;
-    ApplyButton: TButton;
-    DialogBody: TLayout;
-    ColorPanel: TColorPanel;
-  public
-    constructor Create(AOwner: TComponent); override;
-  protected
-    procedure Loaded; override;
-  end;
+  System.Classes, System.UITypes;
 
 function ChooseColor(Owner: TComponent; var Color: TAlphaColor): Boolean;
 
 implementation
 
 uses
-  SBD.Main, SBD.PropertyInspector, SBD.Localization, WinUI3.Dialogs;
-
-{$R *.fmx}
+  System.SysUtils, FMX.Types, FMX.Forms, SBD.Localization, WinUI3.Dialogs;
 
 function ChooseColor(Owner: TComponent; var Color: TAlphaColor): Boolean;
 var
@@ -56,18 +35,6 @@ begin
   Result := Answer.Result = 0;
   if Result then
     Color := Answer.Color;
-end;
-
-constructor TColorEditorForm.Create(AOwner: TComponent);
-begin
-  inherited;
-  TranslateForm(Self);
-end;
-
-procedure TColorEditorForm.Loaded;
-begin
-  inherited;
-  EnableSmoothScrolling(Self);
 end;
 
 end.

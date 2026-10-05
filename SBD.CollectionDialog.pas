@@ -6,7 +6,7 @@ uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Rtti,
   System.Math, FMX.Types, FMX.Controls, FMX.Forms, SBD.Dialogs, FMX.Layouts,
   FMX.StdCtrls, FMX.ListBox, FMX.Grid, FMX.Grid.Style, FMX.Dialogs,
-  FMX.Controls.Presentation, FMX.Consts, SBD.Main, FMX.ScrollBox,
+  FMX.Controls.Presentation, FMX.Consts, SBD.Main, SBD.EditorTypes, FMX.ScrollBox,
   SBD.PropertyInspector;
 
 type

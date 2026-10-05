@@ -46,7 +46,7 @@ type
 implementation
 
 uses
-  SBD.Main, FMX.Consts, SBD.Localization, SBD.PropertyInspector;
+  FMX.Consts, SBD.Localization, SBD.PropertyInspector;
 
 {$R *.fmx}
 
