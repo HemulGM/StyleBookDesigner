@@ -7,7 +7,7 @@ uses
   System.Math, System.TypInfo, System.Generics.Collections, FMX.Types,
   FMX.Controls, FMX.Forms, SBD.Dialogs, FMX.Layouts, FMX.StdCtrls, FMX.ListBox,
   FMX.Edit, FMX.Objects, FMX.Graphics, FMX.Controls.Presentation, FMX.Grid,
-  SBD.PropertyInspector;
+  SBD.PropertyInspector, SBD.EditorTypes;
 
 type
   TPreviewForm = class(TAppDialogForm)
@@ -44,6 +44,7 @@ type
     FOnPreviewChange, FOnAssignClass: TNotifyEvent;
     FZoomPercent, FWheelRemainder, FCustomZoomIndex: Integer;
     FZoomUpdating, FCentering, FPanning: Boolean;
+    FZoomEffects: TZoomEffects;
     FPanOffset, FPanStart, FPanOrigin: TPointF;
     FGridValues: TArray<TArray<TValue>>;
     FGridBitmaps: TObjectList<TBitmap>;
@@ -57,6 +58,7 @@ type
     procedure EndViewPan;
     procedure InspectorFilter(Sender: TObject; Instance: TObject; Prop: TRttiProperty; var Accept: Boolean);
   protected
+    procedure PaintRects(const UpdateRects: array of TRectF); override;
     procedure DoShow; override;
     procedure DoHide; override;
   public
@@ -197,6 +199,7 @@ constructor TPreviewForm.Create(AOwner: TComponent);
 begin
   inherited;
   FZoomPercent := 100;
+  FZoomEffects := TZoomEffects.Create(Self);
   FCustomZoomIndex := -1;
   FClasses := TDictionary<string, TFmxObjectClass>.Create;
   FNames := TStringList.Create;
@@ -221,6 +224,7 @@ begin
   FOnPreviewChange := nil;
   FOnAssignClass := nil;
   ClearControl;
+  FreeAndNil(FZoomEffects);
   FGridBitmaps.Free;
   FreeAndNil(FInspector);
   FPreviewScene := nil;
@@ -614,6 +618,7 @@ begin
       Index := FCustomZoomIndex;
     end;
     ViewZoom.ItemIndex := Index;
+    FZoomEffects.Apply(FControl, FZoomPercent);
     if FControl <> nil then
       TControlAccess(FControl).Scale.Point := PointF(FZoomPercent / 100, FZoomPercent / 100);
     CenterControl;
@@ -729,6 +734,14 @@ end;
 procedure TPreviewForm.Deactivate;
 begin
   EndViewPan;
+  inherited;
+end;
+
+procedure TPreviewForm.PaintRects(const UpdateRects: array of TRectF);
+begin
+  // Styles may create new descendants after zooming (for example, list or grid cells).
+  if (FZoomEffects <> nil) and (FZoomPercent > MaxEffectsZoom) then
+    FZoomEffects.Apply(FControl, FZoomPercent);
   inherited;
 end;
 

@@ -21,6 +21,10 @@ uses
   SBD.BitmapLinksDialog, System.ImageList, System.IniFiles;
 
 type
+  TPaletteGroup = (pgButtons, pgInput, pgLists, pgNavigation, pgLayout, pgShapes,
+    pgMedia, pgDateTime, pgColors, pgIndicators, pg3D, pgAnimations, pgEffects,
+    pgStyleObjects, pgResources, pgOther);
+
   TFormMain = class(TWinUIForm)
     FLayout: TLayout;
     MainBackground: TRectangle;
@@ -111,6 +115,8 @@ type
     CatalogMenuButton, CatalogMenuSeparator: TMenuItem;
     ValidateButton: TMenuItem;
     ObjectMenu: TPopupMenu;
+    AddObjectMenuButton, AddPrimitivesMenuButton, AddAnimationsMenuButton: TMenuItem;
+    GroupsMenuButton, ZOrderMenuButton, StyleInfoMenuButton: TMenuItem;
     NewGroupButton: TMenuItem;
     RenameGroupButton: TMenuItem;
     MoveToGroupButton: TMenuItem;
@@ -151,6 +157,7 @@ type
     procedure InspectorEdit(Sender: TObject; PropertyInfo: TInspectorProperty);
     procedure PropertyFilter(Sender: TObject);
     procedure DeferredRefresh(Sender: TObject);
+    procedure PaletteMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure PaletteDblClick(Sender: TObject);
     procedure DesignDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure DesignMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
@@ -212,6 +219,7 @@ type
     FResizeAnchor: TPointF;
     FZoomUpdating: Boolean;
     FZoomPercent: Integer;
+    FZoomEffects: TZoomEffects;
     FCustomZoomIndex: Integer;
     FPreviewClass: TListBox;
     FPreview: TForm;
@@ -262,7 +270,9 @@ type
     procedure RegisterPaletteClass(AClass: TPersistentClass);
     procedure BuildComponentIcons;
     function ComponentIcon(C: TClass): Integer;
+    function PaletteGroup(C: TClass): TPaletteGroup;
     procedure BuildPalette;
+    procedure BuildAddMenu;
     function AcquireTreeItem(Model: TObject; Parent: TFmxObject; Index: Integer): TTreeViewItem;
     procedure AddTree(AObject: TFmxObject; AParent: TFmxObject; AIndex: Integer = -1);
     procedure MirrorDesignProperty(PropertyInfo: TInspectorProperty);
@@ -400,6 +410,7 @@ begin
   LoadApplicationTheme;
   DocumentLabel.AutoTranslate := False;
   FDocument := TStyleDocument.Create;
+  FZoomEffects := TZoomEffects.Create(Self);
   FEntries := TObjectList<TPropertyEntry>.Create;
   FTreeItems := TDictionary<Pointer, TTreeViewItem>.Create;
   // Keep a standard TTreeView in the FMX designer; use constrained selection
@@ -455,7 +466,9 @@ begin
   end;
   EnableSmoothScrolling(Self);
   BuildComponentIcons;
+  FPalette.OnMouseDown := PaletteMouseDown;
   BuildPalette;
+  BuildAddMenu;
   NewDocument;
 end;
 
@@ -494,6 +507,7 @@ begin
     FRefreshTimer.Enabled := False;
   FreeAndNil(FPreview);
   FreeAndNil(FDesignRoot);
+  FreeAndNil(FZoomEffects);
   if FDesignViewport <> nil then
     FDesignViewport.Visible := False;
   FTreeModelRoot := nil;
@@ -570,6 +584,7 @@ begin
     FBuilding := False;
   end;
   FProperties.RefreshLanguage;
+  BuildPalette;
   RebuildTree;
   UpdateCaption;
 end;
@@ -1065,20 +1080,93 @@ begin
   TMessageManager.DefaultManager.SendMessage(Self, TInternalSettingChangedMessage.Create(StyleBook, Self), True);
 end;
 
+function TFormMain.PaletteGroup(C: TClass): TPaletteGroup;
+
+  function InUnit(const UnitName: string): Boolean;
+  var
+    Ancestor: TClass;
+  begin
+    Ancestor := C;
+    while Ancestor <> nil do
+    begin
+      if SameText(Ancestor.UnitName, UnitName) then
+        Exit(True);
+      Ancestor := Ancestor.ClassParent;
+    end;
+    Result := False;
+  end;
+
+begin
+  if C.InheritsFrom(TAnimation) then
+    Exit(pgAnimations);
+  if C.InheritsFrom(TEffect) then
+    Exit(pgEffects);
+  if not (C.InheritsFrom(TControl) or C.InheritsFrom(TControl3D)) then
+    Exit(pgResources);
+  if C.InheritsFrom(TControl3D) or C.InheritsFrom(TViewport3D) then
+    Exit(pg3D);
+  // Classify specialized families before their generic visual ancestors.
+  if InUnit('FMX.Styles.Objects') or InUnit('FMX.Styles.Switch') then
+    Exit(pgStyleObjects);
+  if InUnit('FMX.Calendar') or InUnit('FMX.CalendarEdit') or InUnit('FMX.DateTimeCtrls') then
+    Exit(pgDateTime);
+  if InUnit('FMX.Colors') then
+    Exit(pgColors);
+  if InUnit('FMX.TabControl') or InUnit('FMX.Menus') or InUnit('FMX.Header') then
+    Exit(pgNavigation);
+  if InUnit('FMX.ListBox') or InUnit('FMX.ListView') or InUnit('FMX.Grid') or
+    InUnit('FMX.Grid.Style') or InUnit('FMX.TreeView') or InUnit('FMX.ComboEdit') then
+    Exit(pgLists);
+  if C.InheritsFrom(TImage) or C.InheritsFrom(TImageControl) or C.InheritsFrom(TGlyph) or
+    C.InheritsFrom(TImageViewer) or InUnit('FMX.Media') or InUnit('FMX.WebBrowser') or
+    InUnit('FMX.Maps') or InUnit('FMX.MagnifierGlass') or InUnit('FMX.Skia') then
+    Exit(pgMedia);
+  if C.InheritsFrom(TCustomButton) or C.InheritsFrom(TCheckBox) or
+    C.InheritsFrom(TRadioButton) or C.InheritsFrom(TSwitch) then
+    Exit(pgButtons);
+  if C.InheritsFrom(TCustomEdit) or C.InheritsFrom(TMemo) or C.InheritsFrom(TText) or
+    C.InheritsFrom(TLabel) or C.InheritsFrom(TPathLabel) then
+    Exit(pgInput);
+  if C.InheritsFrom(TTrackBar) or C.InheritsFrom(TScrollBar) or
+    C.InheritsFrom(TProgressBar) or C.InheritsFrom(TAniIndicator) or InUnit('FMX.ComboTrackBar') then
+    Exit(pgIndicators);
+  if InUnit('FMX.Layouts') or InUnit('FMX.BufferedLayout') or InUnit('FMX.MultiView') or
+    C.InheritsFrom(TPanel) or C.InheritsFrom(TGroupBox) or C.InheritsFrom(TExpander) or
+    C.InheritsFrom(TSplitter) or C.InheritsFrom(TToolBar) or C.InheritsFrom(TStatusBar) then
+    Exit(pgLayout);
+  if C.InheritsFrom(TShape) or C.InheritsFrom(TPaintBox) or C.InheritsFrom(TPlotGrid) or
+    C.InheritsFrom(TSelection) or C.InheritsFrom(TSelectionPoint) then
+    Exit(pgShapes);
+  Result := pgOther;
+end;
+
 procedure TFormMain.BuildPalette;
+const
+  GroupNames: array[TPaletteGroup] of string = ('Кнопки и переключатели', 'Текст и ввод',
+    'Списки и таблицы', 'Вкладки и меню', 'Контейнеры и компоновка', 'Фигуры и рисование',
+    'Изображения и мультимедиа', 'Дата и время', 'Выбор цвета', 'Ползунки и индикаторы',
+    '3D-компоненты', 'Анимации', 'Эффекты', 'Объекты оформления стиля', 'Ресурсы', 'Прочие компоненты');
 var
-  N: string;
   C: TFmxObjectClass;
   Category: Integer;
+  Query, SelectedClass: string;
+  Groups: array[TPaletteGroup] of TStringList;
+  Group: TPaletteGroup;
 begin
+  SelectedClass := '';
+  if (FPalette.Selected <> nil) and FPalette.Selected.Selectable then
+    SelectedClass := FPalette.Selected.Text;
+  Query := FSearch.Text.ToLower;
+  Category := FCategory.ItemIndex;
+  for Group := Low(TPaletteGroup) to High(TPaletteGroup) do
+    Groups[Group] := nil;
   FPalette.BeginUpdate;
   try
     FPalette.Clear;
-    Category := FCategory.ItemIndex;
-    for N in FNames do
+    for var N in FNames do
     begin
       C := FClasses[N];
-      if not FSearch.Text.IsEmpty and not N.ToLower.Contains(FSearch.Text.ToLower) then
+      if not Query.IsEmpty and not N.ToLower.Contains(Query) then
         Continue;
       if (Category = 1) and not (C.InheritsFrom(TControl) or C.InheritsFrom(TControl3D)) then
         Continue;
@@ -1089,12 +1177,36 @@ begin
       if (Category = 4) and (C.InheritsFrom(TControl) or C.InheritsFrom(TControl3D) or
         C.InheritsFrom(TAnimation) or C.InheritsFrom(TEffect)) then
         Continue;
-      var Item := TListBoxItem.Create(FPalette);
-      Item.Text := N;
-      Item.ImageIndex := ComponentIcon(C);
-      Item.Parent := FPalette;
+      Group := PaletteGroup(C);
+      if Groups[Group] = nil then
+        Groups[Group] := TStringList.Create;
+      Groups[Group].Add(N);
+    end;
+    for Group := Low(TPaletteGroup) to High(TPaletteGroup) do
+    begin
+      if Groups[Group] = nil then
+        Continue;
+      var Header := TListBoxGroupHeader.Create(FPalette);
+      Header.Text := Translate(GroupNames[Group]);
+      Header.Selectable := False;
+      Header.CanFocus := False;
+      Header.ImageIndex := -1;
+      Header.StyledSettings := Header.StyledSettings - [TStyledSetting.Style];
+      Header.TextSettings.Font.Style := [TFontStyle.fsBold];
+      Header.Parent := FPalette;
+      for var N in Groups[Group] do
+      begin
+        var Item := TListBoxItem.Create(FPalette);
+        Item.Text := N;
+        Item.ImageIndex := ComponentIcon(FClasses[N]);
+        Item.Parent := FPalette;
+        if N = SelectedClass then
+          FPalette.ItemIndex := Item.Index;
+      end;
     end;
   finally
+    for Group := Low(TPaletteGroup) to High(TPaletteGroup) do
+      Groups[Group].Free;
     FPalette.EndUpdate;
   end;
 end;
@@ -1104,6 +1216,34 @@ begin
   if FBuilding then
     Exit;
   BuildPalette;
+end;
+
+procedure TFormMain.BuildAddMenu;
+const
+  Primitives: array[0..11] of string = ('TRectangle', 'TRoundRect', 'TCalloutRectangle',
+    'TCircle', 'TEllipse', 'TLine', 'TArc', 'TPie', 'TPath', 'TText', 'TImage', 'TLayout');
+
+  procedure AddClass(Menu: TMenuItem; const ClassName: string);
+  begin
+    if not FClasses.ContainsKey(ClassName) then
+      Exit;
+    var Item := TMenuItem.Create(Menu);
+    Item.AutoTranslate := False;
+    Item.Text := ClassName;
+    Item.TagString := ClassName;
+    Item.Tag := acAdd;
+    Item.OnClick := ActionClick;
+    Item.Parent := Menu;
+  end;
+
+begin
+  AddPrimitivesMenuButton.Clear;
+  AddAnimationsMenuButton.Clear;
+  for var ClassName in Primitives do
+    AddClass(AddPrimitivesMenuButton, ClassName);
+  for var ClassName in FNames do
+    if FClasses[ClassName].InheritsFrom(TAnimation) then
+      AddClass(AddAnimationsMenuButton, ClassName);
 end;
 
 procedure TFormMain.ShowCommandMenu(Sender: TObject);
@@ -1157,7 +1297,10 @@ begin
       acRedo:
         Undo(True);
       acAdd:
-        PaletteDblClick(Sender);
+        if (Sender is TMenuItem) and not TMenuItem(Sender).TagString.IsEmpty then
+          AddObject(TMenuItem(Sender).TagString)
+        else
+          PaletteDblClick(Sender);
       acDelete:
         DeleteSelection;
       acDuplicate:
@@ -1736,6 +1879,9 @@ begin
   CopyObjectButton.Enabled := DuplicateButton.Enabled;
   PasteObjectButton.Enabled := (FSelected = nil) or (FSelected = FDocument.Root) or
     (FSelected is TControl) or (FSelected is TControl3D);
+  AddObjectMenuButton.Enabled := not Multiple and PasteObjectButton.Enabled;
+  AddAnimationsMenuButton.Enabled := AddObjectMenuButton.Enabled and
+    (FSelected <> nil) and (FSelected <> FDocument.Root);
   SortStylesButton.Enabled := StyleResourceCount > 1;
   FrontButton.Enabled := DuplicateButton.Enabled;
   BackButton.Enabled := DuplicateButton.Enabled;
@@ -2003,6 +2149,14 @@ begin
       Item.TagString := AParent.TagString + '/' + Item.TagString;
   end;
   var Children := EditableChildren(AObject);
+  // Streaming overrides can enumerate children in a different order. The tree
+  // must follow the model Index, which also determines FMX Z-order.
+  if Length(Children) > 1 then
+    TArray.Sort<TFmxObject>(Children, TComparer<TFmxObject>.Construct(
+      function(const Left, Right: TFmxObject): Integer
+      begin
+        Result := CompareValue(Left.Index, Right.Index);
+      end));
   for var I := 0 to High(Children) do
     AddTree(Children[I], Item, I);
 end;
@@ -2323,7 +2477,9 @@ begin
   Entry := ResolveProperty(Copy, PropertyInfo.WritePath);
   if Entry <> nil then
   try
-    Entry.Prop.SetValue(Entry.Instance, PropertyInfo.Prop.GetValue(PropertyInfo.Instance));
+    if not ((Copy is TEffect) and (FZoomPercent > MaxEffectsZoom) and
+      ((Entry.Prop.Name = 'Enabled') or (Entry.Prop.Name = 'Trigger'))) then
+      Entry.Prop.SetValue(Entry.Instance, PropertyInfo.Prop.GetValue(PropertyInfo.Instance));
     if Entry.Prop.Name = 'Text' then
       ApplyTextPlaceholders(Copy);
     if Copy is TAnimation then
@@ -2340,6 +2496,7 @@ begin
         TControlAccess(Copy).Scale.Point := PointF(FZoomPercent / 100, FZoomPercent / 100);
       end;
     end;
+    FZoomEffects.Apply(FDesignRoot, FZoomPercent, True);
     CenterDesign;
   finally
     Entry.Free;
@@ -2631,11 +2788,21 @@ begin
   end;
 end;
 
+procedure TFormMain.PaletteMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+begin
+  if Button <> TMouseButton.mbLeft then
+    Exit;
+  var Item := FPalette.ItemByPoint(X, Y);
+  // A heading must not activate a component left selected by a previous click.
+  if (Item = nil) or not Item.Selectable then
+    FPalette.ItemIndex := -1;
+end;
+
 procedure TFormMain.PaletteDblClick(Sender: TObject);
 begin
   if FBuilding then
     Exit;
-  if FPalette.ItemIndex >= 0 then
+  if (FPalette.Selected <> nil) and FPalette.Selected.Selectable then
   try
     AddObject(FPalette.Items[FPalette.ItemIndex]);
   except
@@ -2780,6 +2947,7 @@ begin
     EnableSmoothScrolling(FDesignRoot);
     PrepareCopy(FDesignRoot);
     BindDesign(FDesignRoot, R);
+    FZoomEffects.Apply(FDesignRoot, FZoomPercent, True);
     if FDesignRoot is TControl3D then
     begin
       FDesignViewport.Visible := True;
@@ -3508,6 +3676,7 @@ begin
       Index := FCustomZoomIndex;
     end;
     FZoom.ItemIndex := Index;
+    FZoomEffects.Apply(FDesignRoot, FZoomPercent, True);
     Scale := FZoomPercent / 100;
     if FDesignRoot is TControl then
       TControlAccess(FDesignRoot).Scale.Point := PointF(Scale, Scale)

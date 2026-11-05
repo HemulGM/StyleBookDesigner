@@ -340,18 +340,22 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="SBD.EditorTypes.pas"/>
-        <DCCReference Include="SBD.StyleDocument.pas"/>
-        <DCCReference Include="SBD.StyleIO.pas"/>
-        <DCCReference Include="SBD.StyleProperties.pas"/>
-        <DCCReference Include="SBD.StyleTree.pas"/>
         <DCCReference Include="SBD.Localization.pas"/>
         <DCCReference Include="SBD.Dialogs.pas"/>
+        <DCCReference Include="SBD.BitmapLinksDialog.pas">
+            <Form>BitmapLinksEditorForm</Form>
+            <FormType>fmx</FormType>
+        </DCCReference>
         <DCCReference Include="SBD.StyleCatalog.pas"/>
         <DCCReference Include="SBD.StyleCatalogDialog.pas">
             <Form>StyleCatalogDialog</Form>
             <FormType>fmx</FormType>
         </DCCReference>
+        <DCCReference Include="SBD.EditorTypes.pas"/>
+        <DCCReference Include="SBD.StyleDocument.pas"/>
+        <DCCReference Include="SBD.StyleIO.pas"/>
+        <DCCReference Include="SBD.StyleProperties.pas"/>
+        <DCCReference Include="SBD.StyleTree.pas"/>
         <DCCReference Include="SBD.Main.pas">
             <Form>FormMain</Form>
             <FormType>fmx</FormType>
@@ -364,10 +368,6 @@
             <Form>CollectionDialog</Form>
             <FormType>fmx</FormType>
         </DCCReference>
-        <DCCReference Include="SBD.BitmapLinksDialog.pas">
-            <Form>BitmapLinksEditorForm</Form>
-            <FormType>fmx</FormType>
-        </DCCReference>
         <DCCReference Include="SBD.ValuesDialog.pas">
             <Form>NamedValuesDialog</Form>
             <FormType>fmx</FormType>
@@ -376,11 +376,11 @@
             <Form>TextEditorForm</Form>
             <FormType>fmx</FormType>
         </DCCReference>
+        <DCCReference Include="SBD.ColorDialog.pas"/>
         <DCCReference Include="SBD.GradientDialog.pas">
             <Form>GradientEditorForm</Form>
             <FormType>fmx</FormType>
         </DCCReference>
-        <DCCReference Include="SBD.ColorDialog.pas"/>
         <DCCReference Include="SBD.PropertyInspector.pas"/>
         <DCCReference Include="DelphiWinUI3\Fixes\D13\FMX.Menus.pas"/>
         <DCCReference Include="DelphiWinUI3\Fixes\D13\FMX.Platform.Win.pas"/>

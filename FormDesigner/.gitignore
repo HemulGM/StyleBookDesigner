@@ -1,0 +1,8 @@
+/Win32/
+/Win64/
+/Tests/Output/
+/__history/
+/__recovery/
+*.dcu
+*.map
+*.rsm

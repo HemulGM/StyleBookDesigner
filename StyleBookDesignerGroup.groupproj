@@ -1,15 +1,12 @@
 ﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
-        <ProjectGuid>{C459BD1D-75EA-4B83-8B64-59CA39566F44}</ProjectGuid>
+        <ProjectGuid>{BDDC3722-1EDD-4CDD-B4BF-AF7A7948458F}</ProjectGuid>
     </PropertyGroup>
     <ItemGroup>
         <Projects Include="StyleBookDesigner.dproj">
             <Dependencies/>
         </Projects>
-        <Projects Include="Tests\StyleBookDesignerTests.dproj">
-            <Dependencies/>
-        </Projects>
-        <Projects Include="D2D_Issue\Project83.dproj">
+        <Projects Include="FormDesigner\FMXFormDesigner.dproj">
             <Dependencies/>
         </Projects>
     </ItemGroup>
@@ -29,32 +26,23 @@
     <Target Name="StyleBookDesigner:Make">
         <MSBuild Projects="StyleBookDesigner.dproj" Targets="Make"/>
     </Target>
-    <Target Name="Project83">
-        <MSBuild Projects="D2D_Issue\Project83.dproj"/>
+    <Target Name="FMXFormDesigner">
+        <MSBuild Projects="FormDesigner\FMXFormDesigner.dproj"/>
     </Target>
-    <Target Name="Project83:Clean">
-        <MSBuild Projects="D2D_Issue\Project83.dproj" Targets="Clean"/>
+    <Target Name="FMXFormDesigner:Clean">
+        <MSBuild Projects="FormDesigner\FMXFormDesigner.dproj" Targets="Clean"/>
     </Target>
-    <Target Name="Project83:Make">
-        <MSBuild Projects="D2D_Issue\Project83.dproj" Targets="Make"/>
-    </Target>
-    <Target Name="StyleBookDesignerTests">
-        <MSBuild Projects="Tests\StyleBookDesignerTests.dproj"/>
-    </Target>
-    <Target Name="StyleBookDesignerTests:Clean">
-        <MSBuild Projects="Tests\StyleBookDesignerTests.dproj" Targets="Clean"/>
-    </Target>
-    <Target Name="StyleBookDesignerTests:Make">
-        <MSBuild Projects="Tests\StyleBookDesignerTests.dproj" Targets="Make"/>
+    <Target Name="FMXFormDesigner:Make">
+        <MSBuild Projects="FormDesigner\FMXFormDesigner.dproj" Targets="Make"/>
     </Target>
     <Target Name="Build">
-        <CallTarget Targets="StyleBookDesigner;StyleBookDesignerTests;Project83"/>
+        <CallTarget Targets="StyleBookDesigner;FMXFormDesigner"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="StyleBookDesigner:Clean;StyleBookDesignerTests:Clean;Project83:Clean"/>
+        <CallTarget Targets="StyleBookDesigner:Clean;FMXFormDesigner:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="StyleBookDesigner:Make;StyleBookDesignerTests:Make;Project83:Make"/>
+        <CallTarget Targets="StyleBookDesigner:Make;FMXFormDesigner:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

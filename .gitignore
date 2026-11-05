@@ -5,3 +5,8 @@
 /Tests/*
 *.ps1
 *.~*
+/FormDesigner/Tests/*
+*.local
+/Styles/*
+*.dsk
+*.dsv

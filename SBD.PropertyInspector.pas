@@ -18,7 +18,7 @@ type
 
   TInspectorEditorKind = (iekGroup, iekText, iekNumber, iekBoolean, iekEnumeration,
     iekSet, iekSetMember, iekColor, iekStrings, iekBitmap, iekCollection, iekFont,
-    iekPath, iekFontFamily, iekGradient);
+    iekPath, iekFontFamily, iekGradient, iekAnimationProperty, iekTrigger);
 
   TInspectorProperty = class
   public
@@ -65,6 +65,7 @@ type
     procedure AddInstance(Instance: TObject; Parent: TFmxObject; const Prefix: string; Depth: Integer; Ancestors: TList<TObject>);
     function AddNode(Instance: TObject; Prop: TRttiProperty; Parent: TFmxObject; const Path, Caption: string; Kind: TInspectorEditorKind): TInspectorProperty;
     procedure CreateEditor(Node: TInspectorProperty);
+    procedure FillAnimationChoices(Node: TInspectorProperty);
     procedure EditorEnter(Sender: TObject);
     procedure TextExit(Sender: TObject);
     procedure EditKeys(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
@@ -122,7 +123,7 @@ procedure EnableSmoothScrolling(Obj: TFmxObject);
 implementation
 
 uses
-  FMX.Forms, FMX.Dialogs, SBD.Dialogs, SBD.ColorDialog, SBD.TextDialog,
+  FMX.Forms, FMX.Dialogs, FMX.Ani, SBD.Dialogs, SBD.ColorDialog, SBD.TextDialog,
   SBD.GradientDialog;
 
 type
@@ -399,6 +400,13 @@ var
   Obj: TObject;
 begin
   Result := iekText;
+  if Instance is TAnimation then
+  begin
+    if SameText(Prop.Name, 'PropertyName') then
+      Exit(iekAnimationProperty);
+    if SameText(Prop.Name, 'Trigger') or SameText(Prop.Name, 'TriggerInverse') then
+      Exit(iekTrigger);
+  end;
   if Prop.PropertyType.Name = 'TAlphaColor' then
     Exit(iekColor);
   case Prop.PropertyType.TypeKind of
@@ -603,6 +611,72 @@ begin
     Result := FEmptyTextPlaceholder;
 end;
 
+procedure TSBDPropertyInspector.FillAnimationChoices(Node: TInspectorProperty);
+var
+  Animation: TAnimation;
+  TargetKind: TTypeKind;
+  TargetType: PTypeInfo;
+
+  procedure AddProperties(Instance: TObject; const Prefix: string);
+  var
+    Child: TObject;
+  begin
+    if Instance = nil then
+      Exit;
+    for var Prop in FContext.GetType(Instance.ClassType).GetProperties do
+    begin
+      if (Prop.Visibility <> mvPublished) or not Prop.IsReadable then
+        Continue;
+      if (Prop.PropertyType.TypeKind = TargetKind) and
+        ((TargetType = nil) or (Prop.PropertyType.Handle = TargetType)) and
+        (Prop.IsWritable or (TargetKind = tkClass)) then
+        Node.Choices.Add(Prefix + Prop.Name)
+      else if Prefix.IsEmpty and (Prop.PropertyType.TypeKind = tkClass) then
+      begin
+        Child := Prop.GetValue(Instance).AsObject;
+        // Like RAD Studio, offer one level of nested persistent properties.
+        if (Child is TPersistent) and not (Child is TComponent) then
+          AddProperties(Child, Prop.Name + '.');
+      end;
+    end;
+  end;
+
+begin
+  Node.Choices.Clear;
+  Node.Choices.Add('');
+  if Node.Kind = iekTrigger then
+  begin
+    for var State in ['IsChecked', 'IsDragOver', 'IsFocused', 'IsMouseOver',
+      'IsOpen', 'IsPressed', 'IsSelected', 'IsVisible'] do
+    begin
+      Node.Choices.Add(State + '=true');
+      Node.Choices.Add(State + '=false');
+    end;
+    Exit;
+  end;
+  Animation := TAnimation(Node.Instance);
+  TargetKind := tkUnknown;
+  TargetType := nil;
+  if (Animation is TFloatAnimation) or (Animation is TFloatKeyAnimation) then
+    TargetKind := tkFloat
+  else if (Animation is TColorAnimation) or (Animation is TColorKeyAnimation) then
+  begin
+    TargetType := TypeInfo(TAlphaColor);
+    TargetKind := TargetType.Kind;
+  end
+  else if Animation is TGradientAnimation then
+    TargetType := TypeInfo(TGradient)
+  else if Animation is TRectAnimation then
+    TargetType := TypeInfo(TBounds)
+  else if (Animation is TBitmapAnimation) or (Animation is TBitmapListAnimation) then
+    TargetType := TypeInfo(TBitmap);
+  if (TargetKind = tkUnknown) and (TargetType <> nil) then
+    TargetKind := tkClass;
+  if TargetKind <> tkUnknown then
+    AddProperties(Animation.Parent, '');
+  Node.Choices.Sort;
+end;
+
 procedure TSBDPropertyInspector.CreateEditor(Node: TInspectorProperty);
 var
   Host: TLayout;
@@ -614,7 +688,7 @@ var
   Swatch: TRectangle;
   Info: PTypeInfo;
   Data: PTypeData;
-  FontChoice: TComboEdit;
+  TextChoice: TComboEdit;
 begin
   Host := TLayout.Create(Self);
   Host.Parent := Node.Item;
@@ -652,20 +726,28 @@ begin
     Choice.OnChange := ChoiceChange;
     Node.Editor := Choice;
   end
-  else if Node.Kind = iekFontFamily then
+  else if Node.Kind in [iekFontFamily, iekAnimationProperty, iekTrigger] then
   begin
-    FontChoice := TComboEdit.Create(Self);
-    FontChoice.OnResize := ComboResize;
-    FontChoice.Parent := Host;
-    FontChoice.Align := TAlignLayout.Client;
-    ComboResize(FontChoice);
-    for var Family in ['Segoe UI', 'Arial', 'Calibri', 'Consolas', 'Tahoma', 'Times New Roman', 'Verdana'] do
-      FontChoice.Items.Add(Family);
-    FontChoice.Text := ValueText(Node);
-    FontChoice.ReadOnly := Node.ReadOnly;
-    FontChoice.OnExit := TextExit;
-    FontChoice.OnKeyDown := EditKeys;
-    Node.Editor := FontChoice;
+    TextChoice := TComboEdit.Create(Self);
+    TextChoice.OnResize := ComboResize;
+    TextChoice.Parent := Host;
+    TextChoice.Align := TAlignLayout.Client;
+    ComboResize(TextChoice);
+    if Node.Kind = iekFontFamily then
+      for var Family in ['Segoe UI', 'Arial', 'Calibri', 'Consolas', 'Tahoma', 'Times New Roman', 'Verdana'] do
+        TextChoice.Items.Add(Family)
+    else
+    begin
+      FillAnimationChoices(Node);
+      TextChoice.Items.Assign(Node.Choices);
+    end;
+    TextChoice.Text := ValueText(Node);
+    TextChoice.ReadOnly := Node.ReadOnly;
+    TextChoice.OnExit := TextExit;
+    if Node.Kind in [iekAnimationProperty, iekTrigger] then
+      TextChoice.OnChange := TextExit;
+    TextChoice.OnKeyDown := EditKeys;
+    Node.Editor := TextChoice;
   end
   else if Node.Kind in [iekGroup, iekStrings, iekBitmap, iekCollection, iekFont, iekPath, iekGradient] then
   begin
@@ -1163,7 +1245,15 @@ begin
     else if Node.Editor is TCheckBox then
       TCheckBox(Node.Editor).IsChecked := SameText(ValueText(Node), 'True')
     else if Node.Editor is TComboEdit then
-      TComboEdit(Node.Editor).Text := ValueText(Node)
+    begin
+      if Node.Kind in [iekAnimationProperty, iekTrigger] then
+      begin
+        FillAnimationChoices(Node);
+        if TComboEdit(Node.Editor).Items.Text <> Node.Choices.Text then
+          TComboEdit(Node.Editor).Items.Assign(Node.Choices);
+      end;
+      TComboEdit(Node.Editor).Text := ValueText(Node);
+    end
     else if Node.Editor is TEdit then
       TEdit(Node.Editor).Text := ValueText(Node)
     else if Node.Editor is TLabel then

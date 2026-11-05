@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Rtti;
+  System.Rtti, System.Classes, System.Generics.Collections, FMX.Types, FMX.Effects;
 
 type
   TResourceTheme = (rtLight, rtDark);
@@ -39,9 +39,27 @@ type
     Path: string;
   end;
 
+  TZoomEffectState = record
+    Enabled: Boolean;
+    Trigger: TTrigger;
+  end;
+
+  TZoomEffects = class(TComponent)
+  private
+    FStates: TDictionary<TEffect, TZoomEffectState>;
+    procedure ApplyObject(Obj: TFmxObject; Suppress, UseModelState: Boolean);
+  protected
+    procedure Notification(AComponent: TComponent; Operation: TOperation); override;
+  public
+    constructor Create(AOwner: TComponent); override;
+    destructor Destroy; override;
+    procedure Apply(Root: TFmxObject; ZoomPercent: Integer; UseModelState: Boolean = False);
+  end;
+
 const
   MinWorkspaceZoom = 50;
   MaxWorkspaceZoom = 2000;
+  MaxEffectsZoom = 400;
   acNew = 1;
   acOpen = 2;
   acSave = 3;
@@ -78,6 +96,72 @@ const
   acAutoStyleClass = 34;
 
 implementation
+
+constructor TZoomEffects.Create(AOwner: TComponent);
+begin
+  inherited;
+  FStates := TDictionary<TEffect, TZoomEffectState>.Create;
+end;
+
+destructor TZoomEffects.Destroy;
+begin
+  for var Effect in FStates.Keys do
+    Effect.RemoveFreeNotification(Self);
+  FStates.Free;
+  inherited;
+end;
+
+procedure TZoomEffects.Notification(AComponent: TComponent; Operation: TOperation);
+begin
+  inherited;
+  if (Operation = opRemove) and (AComponent is TEffect) and (FStates <> nil) then
+    FStates.Remove(TEffect(AComponent));
+end;
+
+procedure TZoomEffects.ApplyObject(Obj: TFmxObject; Suppress, UseModelState: Boolean);
+var
+  State: TZoomEffectState;
+begin
+  if Obj is TEffect then
+  begin
+    var Effect := TEffect(Obj);
+    var Saved := FStates.TryGetValue(Effect, State);
+    if not Saved then
+    begin
+      State.Enabled := Effect.Enabled;
+      State.Trigger := Effect.Trigger;
+    end;
+    // Workspace copies can be edited while suppressed; restore the latest model values.
+    if UseModelState and (Effect.TagObject is TEffect) then
+    begin
+      State.Enabled := TEffect(Effect.TagObject).Enabled;
+      State.Trigger := TEffect(Effect.TagObject).Trigger;
+    end;
+    if Suppress then
+    begin
+      if not Saved then
+        Effect.FreeNotification(Self);
+      FStates.AddOrSetValue(Effect, State);
+      Effect.Trigger := '';
+      Effect.Enabled := False;
+    end
+    else if Saved then
+    begin
+      FStates.Remove(Effect);
+      Effect.RemoveFreeNotification(Self);
+      Effect.Trigger := State.Trigger;
+      Effect.Enabled := State.Enabled;
+    end;
+  end;
+  for var I := 0 to Obj.ChildrenCount - 1 do
+    ApplyObject(Obj.Children[I], Suppress, UseModelState);
+end;
+
+procedure TZoomEffects.Apply(Root: TFmxObject; ZoomPercent: Integer; UseModelState: Boolean);
+begin
+  if Root <> nil then
+    ApplyObject(Root, ZoomPercent > MaxEffectsZoom, UseModelState);
+end;
 
 function TNamedStyleValue.ValueFor(ATheme: TResourceTheme): string;
 begin
