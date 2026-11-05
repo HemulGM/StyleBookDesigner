@@ -52,6 +52,16 @@ begin
   Language.AddLang('en-US');
   Add('Тема приложения', 'App theme');
   Add('Мастер градиента', 'Gradient editor');
+  Add('Мастер контура', 'Path editor');
+  Add('Вставьте команды SVG path (атрибут d). Превью обновляется при вводе.',
+    'Paste SVG path commands (the d attribute). The preview updates as you type.');
+  Add('Некорректные данные контура (позиция %d).', 'Invalid path data (position %d).');
+  Add('Слишком большой контур (максимум 256 КБ текста).', 'Path data is too large (256 KB text maximum).');
+  Add('Слишком много команд контура.', 'Too many path commands.');
+  Add('Координаты контура вне допустимого диапазона.', 'Path coordinates are outside the supported range.');
+  Add('Не удалось построить превью контура.', 'Unable to render the path preview.');
+  Add('Неизвестный курсор. Выберите имя или введите число от -32768 до 32767.',
+    'Unknown cursor. Choose a name or enter a number from -32768 to 32767.');
   Add('Настройте направление и цветовые точки. Шахматный фон показывает прозрачность.',
     'Set the direction and color stops. The checkerboard shows transparency.');
   Add('Тип градиента', 'Gradient type');

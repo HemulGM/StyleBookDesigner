@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Rtti, System.Generics.Collections, FMX.Types, SBD.EditorTypes;
+  System.Classes, System.Rtti, System.Generics.Collections, FMX.Types, SBD.EditorTypes;
 
 function IsStyleProperty(Instance: TObject; Prop: TRttiProperty): Boolean;
 
@@ -15,12 +15,51 @@ procedure SetStylePropertyText(Root, Selected: TFmxObject; AEntry: TPropertyEntr
 
 procedure CollectStyleProperties(Entries: TObjectList<TPropertyEntry>; AInstance: TObject; const APrefix: string; ADepth: Integer; const FilterText: string = '');
 
+procedure GetCursorNames(Names: TStrings);
+
+function CursorPropertyText(Value: Int64): string;
+
+function ParseCursorProperty(const Text: string): Integer;
+
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.TypInfo, System.Math, FMX.Controls,
+  System.SysUtils, System.UITypes, System.TypInfo, System.Math, FMX.Controls,
   FMX.Controls3D, FMX.Ani, FMX.Effects, FMX.Graphics, FMX.Styles,
   FMX.Styles.Objects, SBD.StyleIO, SBD.Localization;
+
+const
+  CursorNames: array[0..22] of string = ('crDefault', 'crNone', 'crArrow',
+    'crCross', 'crIBeam', 'crSizeNESW', 'crSizeNS', 'crSizeNWSE', 'crSizeWE',
+    'crUpArrow', 'crHourGlass', 'crDrag', 'crNoDrop', 'crHSplit', 'crVSplit',
+    'crMultiDrag', 'crSQLWait', 'crNo', 'crAppStart', 'crHelp', 'crHandPoint',
+    'crSizeAll', 'crSize');
+  CursorValues: array[0..22] of Integer = (0, -1, -2, -3, -4, -6, -7, -8, -9,
+    -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20, -21, -22, -22);
+
+procedure GetCursorNames(Names: TStrings);
+begin
+  Names.Clear;
+  for var Name in CursorNames do
+    Names.Add(Name);
+end;
+
+function CursorPropertyText(Value: Int64): string;
+begin
+  for var I := Low(CursorValues) to High(CursorValues) do
+    if CursorValues[I] = Value then
+      Exit(CursorNames[I]);
+  Result := IntToStr(Value);
+end;
+
+function ParseCursorProperty(const Text: string): Integer;
+begin
+  for var I := Low(CursorNames) to High(CursorNames) do
+    if SameText(Trim(Text), CursorNames[I]) then
+      Exit(CursorValues[I]);
+  if not TryStrToInt(Trim(Text), Result) or (Result < -32768) or (Result > 32767) then
+    raise EConvertError.Create(Translate('Неизвестный курсор. Выберите имя или введите число от -32768 до 32767.'));
+end;
 
 function IsStyleProperty(Instance: TObject; Prop: TRttiProperty): Boolean;
 const
@@ -112,6 +151,8 @@ begin
     if Obj is TBitmap then
       Exit(Translate('Изображение (двойной щелчок)'));
   end;
+  if AEntry.Prop.PropertyType.Handle = TypeInfo(TCursor) then
+    Exit(CursorPropertyText(V.AsOrdinal));
   if AEntry.Prop.PropertyType.Name = 'TAlphaColor' then
     Exit('#' + IntToHex(V.AsOrdinal, 8));
   case V.Kind of
@@ -140,6 +181,8 @@ begin
     raise Exception.Create(Translate('Это свойство доступно только для чтения.'));
   Info := AEntry.Prop.PropertyType.Handle;
   S := Trim(AText);
+  if Info = TypeInfo(TCursor) then
+    S := IntToStr(ParseCursorProperty(S));
   V := AEntry.Prop.GetValue(AEntry.Instance);
   case V.Kind of
     tkInteger, tkInt64:

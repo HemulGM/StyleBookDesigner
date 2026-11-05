@@ -376,6 +376,10 @@
             <Form>TextEditorForm</Form>
             <FormType>fmx</FormType>
         </DCCReference>
+        <DCCReference Include="SBD.PathDialog.pas">
+            <Form>PathEditorForm</Form>
+            <FormType>fmx</FormType>
+        </DCCReference>
         <DCCReference Include="SBD.ColorDialog.pas"/>
         <DCCReference Include="SBD.GradientDialog.pas">
             <Form>GradientEditorForm</Form>

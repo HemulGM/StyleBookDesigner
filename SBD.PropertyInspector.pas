@@ -18,7 +18,7 @@ type
 
   TInspectorEditorKind = (iekGroup, iekText, iekNumber, iekBoolean, iekEnumeration,
     iekSet, iekSetMember, iekColor, iekStrings, iekBitmap, iekCollection, iekFont,
-    iekPath, iekFontFamily, iekGradient, iekAnimationProperty, iekTrigger);
+    iekPath, iekFontFamily, iekGradient, iekAnimationProperty, iekTrigger, iekCursor);
 
   TInspectorProperty = class
   public
@@ -124,7 +124,7 @@ implementation
 
 uses
   FMX.Forms, FMX.Dialogs, FMX.Ani, SBD.Dialogs, SBD.ColorDialog, SBD.TextDialog,
-  SBD.GradientDialog;
+  SBD.GradientDialog, SBD.PathDialog, SBD.StyleProperties;
 
 type
   TSmoothScrollAccess = class(TCustomPresentedScrollBox);
@@ -407,6 +407,8 @@ begin
     if SameText(Prop.Name, 'Trigger') or SameText(Prop.Name, 'TriggerInverse') then
       Exit(iekTrigger);
   end;
+  if Prop.PropertyType.Handle = TypeInfo(TCursor) then
+    Exit(iekCursor);
   if Prop.PropertyType.Name = 'TAlphaColor' then
     Exit(iekColor);
   case Prop.PropertyType.TypeKind of
@@ -577,6 +579,8 @@ begin
     BitIndex := Node.MemberOrdinal - ByteOffsetOfSet(Node.Prop.PropertyType.Handle) * 8;
     Exit(BoolToStr((PByte(NativeUInt(V.GetReferenceToRawData) + NativeUInt(BitIndex div 8))^ and (1 shl (BitIndex mod 8))) <> 0, True));
   end;
+  if Node.Kind = iekCursor then
+    Exit(CursorPropertyText(V.AsOrdinal));
   if Node.Kind = iekColor then
     Exit('#' + IntToHex(V.AsOrdinal, 8));
   if V.Kind = tkClass then
@@ -681,7 +685,7 @@ procedure TSBDPropertyInspector.CreateEditor(Node: TInspectorProperty);
 var
   Host: TLayout;
   Edit: TEdit;
-  Choice: TComboBox;
+  Choice: TComboEdit;
   Check: TCheckBox;
   Wizard: TButton;
   LabelControl: TLabel;
@@ -708,22 +712,29 @@ begin
     Check.OnChange := CheckChange;
     Node.Editor := Check;
   end
-  else if Node.Kind = iekEnumeration then
+  else if Node.Kind in [iekEnumeration, iekCursor] then
   begin
-    Choice := TComboBox.Create(Self);
+    Choice := TComboEdit.Create(Self);
     Choice.OnResize := ComboResize;
-    Choice.ListBox.ScrollAnimation := TBehaviorBoolean.True;
     Choice.Parent := Host;
     Choice.Align := TAlignLayout.Client;
     ComboResize(Choice);
-    Info := Node.Prop.PropertyType.Handle;
-    Data := GetTypeData(Info);
-    for var I := Data.MinValue to Data.MaxValue do
-      Node.Choices.Add(GetEnumName(Info, I));
+    if Node.Kind = iekCursor then
+      GetCursorNames(Node.Choices)
+    else
+    begin
+      Info := Node.Prop.PropertyType.Handle;
+      Data := GetTypeData(Info);
+      for var I := Data.MinValue to Data.MaxValue do
+        Node.Choices.Add(GetEnumName(Info, I));
+    end;
     Choice.Items.Assign(Node.Choices);
-    Choice.ItemIndex := Choice.Items.IndexOf(ValueText(Node));
+    Choice.Text := ValueText(Node);
+    Choice.ReadOnly := Node.ReadOnly;
     Choice.Enabled := not Node.ReadOnly;
     Choice.OnChange := ChoiceChange;
+    Choice.OnExit := TextExit;
+    Choice.OnKeyDown := EditKeys;
     Node.Editor := Choice;
   end
   else if Node.Kind in [iekFontFamily, iekAnimationProperty, iekTrigger] then
@@ -1197,24 +1208,15 @@ end;
 procedure TSBDPropertyInspector.ChoiceChange(Sender: TObject);
 var
   Node: TInspectorProperty;
-  Choice: TComboBox;
+  Choice: TComboEdit;
 begin
   if FUpdating then
     Exit;
   Node := TInspectorProperty(TControl(Sender).TagObject);
-  Choice := TComboBox(Sender);
-  if Choice.ItemIndex < 0 then
+  Choice := TComboEdit(Sender);
+  if Node.ReadOnly or (Choice.Items.IndexOf(Choice.Text) < 0) then
     Exit;
-  try
-    WriteProperty(Node.Path, Choice.Items[Choice.ItemIndex]);
-  except
-    on E: Exception do
-    begin
-      FError.Text := E.Message;
-      FError.Visible := True;
-      ResetEditor(Node);
-    end;
-  end;
+  TextExit(Sender);
 end;
 
 procedure TSBDPropertyInspector.CheckChange(Sender: TObject);
@@ -1240,9 +1242,7 @@ procedure TSBDPropertyInspector.ResetEditor(Node: TInspectorProperty);
 begin
   FUpdating := True;
   try
-    if Node.Editor is TComboBox then
-      TComboBox(Node.Editor).ItemIndex := TComboBox(Node.Editor).Items.IndexOf(ValueText(Node))
-    else if Node.Editor is TCheckBox then
+    if Node.Editor is TCheckBox then
       TCheckBox(Node.Editor).IsChecked := SameText(ValueText(Node), 'True')
     else if Node.Editor is TComboEdit then
     begin
@@ -1276,6 +1276,8 @@ var
 begin
   Info := Node.Prop.PropertyType.Handle;
   S := Trim(Text);
+  if Node.Kind = iekCursor then
+    S := IntToStr(ParseCursorProperty(S));
   V := Node.Prop.GetValue(Node.Instance);
   case V.Kind of
     tkInteger, tkInt64:
@@ -1390,7 +1392,6 @@ var
   OpenDialog: TOpenDialog;
   Font: TFont;
   Bitmap: TBitmap;
-  PathData: TPathData;
 begin
   if FUpdating then
     Exit;
@@ -1426,29 +1427,25 @@ begin
         GradientDialog.Free;
       end;
     end
-    else if (Obj is TStrings) or (Obj is TPathData) then
+    else if Obj is TPathData then
+    begin
+      var PathDialog := TPathEditorForm.CreateEditor(DialogOwner, TPathData(Obj));
+      try
+        if (PathDialog.ShowModal = mrOk) and PathDialog.Valid then
+          TPathData(Obj).Assign(PathDialog.Value);
+      finally
+        PathDialog.Free;
+      end;
+    end
+    else if Obj is TStrings then
     begin
       TextDialog := TTextEditorForm.Create(DialogOwner);
       if DialogOwner is TForm then
         TextDialog.StyleBook := TForm(DialogOwner).StyleBook;
       try
-        if Obj is TStrings then
-          TextDialog.TextMemo.Lines.Assign(TStrings(Obj))
-        else
-          TextDialog.TextMemo.Lines.Text := TPathData(Obj).Data;
+        TextDialog.TextMemo.Lines.Assign(TStrings(Obj));
         if TextDialog.ShowModal = mrOk then
-          if Obj is TStrings then
-            TStrings(Obj).Assign(TextDialog.TextMemo.Lines)
-          else
-          begin
-            PathData := TPathData.Create;
-            try
-              PathData.Data := TextDialog.TextMemo.Lines.Text;
-              TPathData(Obj).Assign(PathData);
-            finally
-              PathData.Free;
-            end;
-          end;
+          TStrings(Obj).Assign(TextDialog.TextMemo.Lines);
       finally
         TextDialog.Free;
       end;

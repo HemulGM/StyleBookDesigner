@@ -20,6 +20,7 @@ uses
   SBD.CollectionDialog in 'SBD.CollectionDialog.pas' {CollectionDialog},
   SBD.ValuesDialog in 'SBD.ValuesDialog.pas' {NamedValuesDialog},
   SBD.TextDialog in 'SBD.TextDialog.pas' {TextEditorForm},
+  SBD.PathDialog in 'SBD.PathDialog.pas' {PathEditorForm},
   SBD.ColorDialog in 'SBD.ColorDialog.pas',
   SBD.GradientDialog in 'SBD.GradientDialog.pas' {GradientEditorForm},
   SBD.PropertyInspector in 'SBD.PropertyInspector.pas',

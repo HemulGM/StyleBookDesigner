@@ -383,7 +383,7 @@ implementation
 
 uses
   System.Messaging, SBD.Localization, SBD.Preview, WinUI3.Style,
-  SBD.CollectionDialog, SBD.ValuesDialog, SBD.TextDialog, SBD.GradientDialog,
+  SBD.CollectionDialog, SBD.ValuesDialog, SBD.TextDialog, SBD.GradientDialog, SBD.PathDialog,
   SBD.ColorDialog, SBD.StyleCatalogDialog, SBD.Dialogs, WinUI3.Dialogs,
   SBD.StyleTree, SBD.StyleIO, SBD.StyleProperties;
 
@@ -2684,8 +2684,7 @@ procedure TFormMain.InspectorEdit(Sender: TObject; PropertyInfo: TInspectorPrope
 var
   Obj: TObject;
   Color: TAlphaColor;
-  Dialog: TTextEditorForm;
-  PathData: TPathData;
+  PathDialog: TPathEditorForm;
   Path: string;
 begin
   if FBuilding or (PropertyInfo.Prop = nil) then
@@ -2767,23 +2766,18 @@ begin
   end
   else if Obj is TPathData then
   begin
-    Dialog := TTextEditorForm.Create(Self);
-    Dialog.StyleBook := StyleBook;
-    PathData := TPathData.Create;
+    PathDialog := TPathEditorForm.CreateEditor(Self, TPathData(Obj));
     try
-      Dialog.Caption := 'PathData';
-      Dialog.TextMemo.Lines.Text := TPathData(Obj).Data;
-      if Dialog.ShowModal = mrOk then
+      if (PathDialog.ShowModal = mrOk) and PathDialog.Valid and
+        (PathDialog.Value.Data <> TPathData(Obj).Data) then
       begin
-        PathData.Data := Dialog.TextMemo.Lines.Text;
         Remember;
-        TPathData(Obj).Assign(PathData);
+        TPathData(Obj).Assign(PathDialog.Value);
         DetachPropertyBinding(FSelected, Path + '.Data');
         Changed;
       end;
     finally
-      PathData.Free;
-      Dialog.Free;
+      PathDialog.Free;
     end;
   end;
 end;

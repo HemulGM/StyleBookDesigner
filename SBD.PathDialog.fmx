@@ -1,0 +1,121 @@
+﻿object PathEditorForm: TPathEditorForm
+  Caption = #1052#1072#1089#1090#1077#1088#32#1082#1086#1085#1090#1091#1088#1072
+  ClientHeight = 640
+  ClientWidth = 840
+  Position = OwnerFormCenter
+  Constraints.MinHeight = 480
+  Constraints.MinWidth = 640
+  FormFactor.Width = 320
+  FormFactor.Height = 480
+  FormFactor.Devices = [Desktop]
+  object LayoutHeader: TLayout
+    Align = Top
+    Padding.Left = 24
+    Padding.Top = 16
+    Padding.Right = 24
+    Size.Width = 840
+    Size.Height = 110
+    Size.PlatformDefault = False
+    object LabelTitle: TLabel
+      Align = Top
+      StyledSettings = [FontColor]
+      Size.Width = 792
+      Size.Height = 36
+      Size.PlatformDefault = False
+      TextSettings.Font.Size = 20
+      Text = #1052#1072#1089#1090#1077#1088#32#1082#1086#1085#1090#1091#1088#1072
+    end
+    object LabelHelp: TLabel
+      Align = Client
+      TextSettings.WordWrap = True
+      Size.Width = 792
+      Size.Height = 58
+      Size.PlatformDefault = False
+      Text = #1042#1089#1090#1072#1074#1100#1090#1077#32#1082#1086#1084#1072#1085#1076#1099#32#83#86#71#32#112#97#116#104#32#40#1072#1090#1088#1080#1073#1091#1090#32#100#41#46#32#1055#1088#1077#1074#1100#1102#32#1086#1073#1085#1086#1074#1083#1103#1077#1090#1089#1103#32#1087#1088#1080#32#1074#1074#1086#1076#1077#46
+    end
+  end
+  object PanelActions: TPanel
+    Align = Bottom
+    Padding.Left = 24
+    Padding.Top = 24
+    Padding.Right = 24
+    Padding.Bottom = 24
+    Position.Y = 552
+    Size.Width = 840
+    Size.Height = 88
+    Size.PlatformDefault = False
+    StyleLookup = 'panelstyle_fill_strong_dialog'
+    object ButtonCancel: TButton
+      Align = Right
+      Cancel = True
+      ModalResult = 2
+      Position.X = 680
+      Size.Width = 112
+      Size.Height = 40
+      Size.PlatformDefault = False
+      Text = #1054#1090#1084#1077#1085#1072
+    end
+    object ButtonApply: TButton
+      Align = Right
+      Margins.Right = 8
+      Position.X = 552
+      Size.Width = 120
+      Size.Height = 40
+      Size.PlatformDefault = False
+      StyleLookup = 'buttonstyle_accent'
+      Text = #1055#1088#1080#1084#1077#1085#1080#1090#1100
+      OnClick = ApplyClick
+    end
+  end
+  object LayoutBody: TLayout
+    Align = Client
+    Margins.Left = 24
+    Margins.Right = 24
+    Margins.Bottom = 16
+    Size.Width = 792
+    Size.Height = 426
+    Size.PlatformDefault = False
+    object LabelValidation: TLabel
+      Align = Bottom
+      Visible = False
+      StyledSettings = [Family, Size, Style]
+      TextSettings.FontColor = xFFE74856
+      TextSettings.WordWrap = True
+      Position.Y = 382
+      Size.Width = 792
+      Size.Height = 44
+      Size.PlatformDefault = False
+    end
+    object LayoutPreview: TLayout
+      Align = Right
+      Margins.Left = 16
+      Size.Width = 300
+      Size.Height = 382
+      Size.PlatformDefault = False
+      object LabelPreview: TLabel
+        Align = Top
+        Size.Width = 300
+        Size.Height = 32
+        Size.PlatformDefault = False
+        Text = #1055#1088#1077#1076#1087#1088#1086#1089#1084#1086#1090#1088
+      end
+      object PaintBoxPreview: TPaintBox
+        Align = Client
+        Size.Width = 300
+        Size.Height = 350
+        Size.PlatformDefault = False
+        OnPaint = PreviewPaint
+      end
+    end
+    object MemoData: TMemo
+      Align = Client
+      Size.Width = 476
+      Size.Height = 382
+      Size.PlatformDefault = False
+      TabOrder = 0
+      WordWrap = True
+      TextSettings.Font.Family = 'Consolas'
+      OnChangeTracking = DataChanged
+    end
+  end
+end
